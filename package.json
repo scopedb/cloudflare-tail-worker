@@ -37,7 +37,8 @@
   "devDependencies": {
     "@types/node": "^25.5.0",
     "typescript": "^5.8.2",
-    "wrangler": "^4.151.1"
+    "wrangler": "^4.151.1",
+    "yaml": "^2.9.1"
   },
   "engines": {
     "node": ">=20"

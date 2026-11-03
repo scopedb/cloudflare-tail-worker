@@ -1,5 +1,0 @@
-{
-  "name": "v_cloudflare_errors",
-  "comment": "Cloudflare Worker 5xx responses, non-ok outcomes, error logs, and uncaught exceptions",
-  "statement": "FROM scopedb.public.cloudflare_worker_events\nWHERE level = 'error'\n   OR outcome != 'ok'\n   OR (status IS NOT NULL AND status >= 500)\nSELECT\n    occurred_at,\n    service,\n    event_type,\n    outcome,\n    level,\n    method,\n    host,\n    path,\n    status,\n    ray_id,\n    message,\n    attributes['invocation_id']::string AS invocation_id,\n    attributes['exception_name']::string AS exception_name,\n    attributes['stack']::string AS stack,\n    attributes"
-}

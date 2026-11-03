@@ -1,0 +1,56 @@
+# Copyright 2026 ScopeDB, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: v_cloudflare_requests
+comment: Flattened Cloudflare Worker HTTP, web analytics, and invocation metrics
+statement: |
+  FROM scopedb.public.cloudflare_worker_events
+  WHERE event_type = 'worker.invocation'
+  SELECT
+      occurred_at,
+      service,
+      outcome,
+      level,
+      method,
+      host,
+      path,
+      status,
+      ray_id,
+      attributes['invocation_id']::string AS invocation_id,
+      attributes['trace_id']::string AS trace_id,
+      attributes['wall_time_ms']::float AS wall_time_ms,
+      attributes['cpu_time_ms']::float AS cpu_time_ms,
+      attributes['log_count']::int AS log_count,
+      attributes['exception_count']::int AS exception_count,
+      attributes['colo']::string AS colo,
+      attributes['continent']::string AS continent,
+      attributes['country']::string AS country,
+      attributes['region']::string AS region,
+      attributes['city']::string AS city,
+      attributes['timezone']::string AS timezone,
+      attributes['asn']::int AS asn,
+      attributes['as_organization']::string AS as_organization,
+      attributes['user_agent']::string AS user_agent,
+      attributes['accept']::string AS accept,
+      attributes['sec_fetch_mode']::string AS sec_fetch_mode,
+      attributes['sec_fetch_dest']::string AS sec_fetch_dest,
+      attributes['is_prefetch']::boolean AS is_prefetch,
+      attributes['is_rsc']::boolean AS is_rsc,
+      attributes['referer_host']::string AS referer_host,
+      attributes['referer_path']::string AS referer_path,
+      attributes['utm_source']::string AS utm_source,
+      attributes['utm_medium']::string AS utm_medium,
+      attributes['utm_campaign']::string AS utm_campaign,
+      attributes['ref']::string AS ref,
+      attributes['verified_bot_category']::string AS verified_bot_category

@@ -19,6 +19,7 @@ import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import { gunzipSync } from "node:zlib";
 import { type CatalogTable, type CatalogView, Client } from "scopedb";
+import YAML from "yaml";
 import { createTailWorker, type TailItem, tailItemsToRows } from "../src/index.js";
 
 describe("cloudflare-tail-worker", () => {
@@ -270,9 +271,9 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(rows[0]?.message, "invocation (ok)");
   });
 
-  it("validates Catalog JSON table and view definitions against the ScopeDB SDK and emitted row columns", async () => {
-    const tableDef = JSON.parse(
-      await readFile(new URL("../../catalog/table.json", import.meta.url), "utf8"),
+  it("validates Catalog YAML table and view definitions against the ScopeDB SDK and emitted row columns", async () => {
+    const tableDef = YAML.parse(
+      await readFile(new URL("../../catalog/table.yaml", import.meta.url), "utf8"),
     ) as CatalogTable;
 
     const client = new Client("https://workspace.scopedb.cloud", {
@@ -314,8 +315,8 @@ describe("cloudflare-tail-worker", () => {
       "v_cloudflare_errors",
       "v_cloudflare_ai_bots",
     ]) {
-      const viewDef = JSON.parse(
-        await readFile(new URL(`../../catalog/${viewName}.json`, import.meta.url), "utf8"),
+      const viewDef = YAML.parse(
+        await readFile(new URL(`../../catalog/${viewName}.yaml`, import.meta.url), "utf8"),
       ) as CatalogView;
       const viewResult = await client.catalog().view("scopedb", "public", viewName).apply(viewDef);
       assert.equal(viewResult.after?.name, viewName);
