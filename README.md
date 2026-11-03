@@ -38,16 +38,18 @@ Apply the Catalog JSON definitions in [`catalog/`](catalog) using the [ScopeDB C
 ```bash
 scope catalog apply --table scopedb.public.cloudflare_worker_events -f catalog/table.json
 scope catalog apply --view scopedb.public.v_cloudflare_requests -f catalog/v_cloudflare_requests.json
+scope catalog apply --view scopedb.public.v_cloudflare_pageviews -f catalog/v_cloudflare_pageviews.json
 scope catalog apply --view scopedb.public.v_cloudflare_errors -f catalog/v_cloudflare_errors.json
 scope catalog apply --view scopedb.public.v_cloudflare_ai_bots -f catalog/v_cloudflare_ai_bots.json
 ```
 
-| Object                                     | Kind  | Definition                                                                 | Purpose                                                                                                             |
-| ------------------------------------------ | ----- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `scopedb.public.cloudflare_worker_events`  | Table | [`catalog/table.json`](catalog/table.json)                                 | Base event table storing `worker.invocation`, `worker.log`, and `worker.exception` rows clustered by `service`      |
-| `scopedb.public.v_cloudflare_requests`     | View  | [`catalog/v_cloudflare_requests.json`](catalog/v_cloudflare_requests.json) | Flattened HTTP/Worker invocation metrics (`wall_time_ms`, `cpu_time_ms`, `colo`, `country`, `user_agent`, `status`) |
-| `scopedb.public.v_cloudflare_errors`       | View  | [`catalog/v_cloudflare_errors.json`](catalog/v_cloudflare_errors.json)     | All `5xx` responses, non-`ok` Worker outcomes, `console.error` logs, and uncaught exceptions with stack traces      |
-| `scopedb.public.v_cloudflare_ai_bots`      | View  | [`catalog/v_cloudflare_ai_bots.json`](catalog/v_cloudflare_ai_bots.json)   | Requests to `/llms.txt` or `*.md` and traffic from AI crawlers and coding agents (`ClaudeBot`, `GPTBot`, `Cursor`)  |
+| Object                                     | Kind  | Definition                                                                   | Purpose                                                                                                             |
+| ------------------------------------------ | ----- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `scopedb.public.cloudflare_worker_events`  | Table | [`catalog/table.json`](catalog/table.json)                                   | Base event table storing `worker.invocation`, `worker.log`, and `worker.exception` rows clustered by `service`      |
+| `scopedb.public.v_cloudflare_requests`     | View  | [`catalog/v_cloudflare_requests.json`](catalog/v_cloudflare_requests.json)   | Flattened HTTP/Worker invocation metrics (`wall_time_ms`, `cpu_time_ms`, `colo`, `country`, `user_agent`, `status`) |
+| `scopedb.public.v_cloudflare_pageviews`    | View  | [`catalog/v_cloudflare_pageviews.json`](catalog/v_cloudflare_pageviews.json) | Clean browser pageviews excluding link prefetches, RSC payloads, API routes, static assets, and crawlers            |
+| `scopedb.public.v_cloudflare_errors`       | View  | [`catalog/v_cloudflare_errors.json`](catalog/v_cloudflare_errors.json)       | All `5xx` responses, non-`ok` Worker outcomes, `console.error` logs, and uncaught exceptions with stack traces      |
+| `scopedb.public.v_cloudflare_ai_bots`      | View  | [`catalog/v_cloudflare_ai_bots.json`](catalog/v_cloudflare_ai_bots.json)     | Requests to `/llms.txt` or `*.md` and traffic from AI crawlers and coding agents (`ClaudeBot`, `GPTBot`, `Cursor`)  |
 
 ### 2. Deploy `scopedb-tail` once in your Cloudflare account
 
@@ -120,12 +122,11 @@ LIMIT 25
 ### Analyze top referrers, campaigns, and visitor geography
 
 ```scopeql
-FROM scopedb.public.v_cloudflare_requests
+FROM scopedb.public.v_cloudflare_pageviews
 WHERE occurred_at >= NOW() - '7d'::interval
-  AND status = 200
 GROUP BY continent, country, referer_host, referer_path, utm_source
-AGGREGATE count() AS views
-ORDER BY views DESC
+AGGREGATE count() AS pageviews
+ORDER BY pageviews DESC
 LIMIT 25
 ```
 
@@ -136,6 +137,19 @@ FROM scopedb.public.cloudflare_worker_events
 WHERE attributes['invocation_id']::string = '<invocation_id>'
 SELECT occurred_at, event_type, level, message, attributes
 ORDER BY occurred_at ASC
+```
+
+## Render Plausible-style web analytics charts with `$scopedb` and `@scopedb/scopeview`
+
+With the [ScopeDB Agent Skill](https://github.com/scopedb/scopedb-skills) (`$scopedb`) and [`@scopedb/scopeview`](https://github.com/scopedb/scopeview), your coding agent can query `v_cloudflare_pageviews` and `v_cloudflare_ai_bots` and export offline interactive HTML charts on demand:
+
+```text
+Use $scopedb to analyze our Cloudflare web and AI traffic over the last 7 days from scopedb.public.v_cloudflare_pageviews and scopedb.public.v_cloudflare_ai_bots, and render @scopedb/scopeview interactive HTML charts for:
+1. Hourly or daily pageviews over time (line chart)
+2. Top 15 visited pages by path (ranked bar chart)
+3. Top referrers (referer_host, referer_path) and UTM sources (ranked bar chart)
+4. Top visitor countries and cities (ranked bar chart)
+5. AI agent and crawler fetches of /llms.txt and *.md by user_agent and path (ranked bar chart)
 ```
 
 ## Custom filtering and sampling

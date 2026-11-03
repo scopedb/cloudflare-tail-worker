@@ -62,6 +62,9 @@ describe("cloudflare-tail-worker", () => {
               "CF-Ray": "8dc1234567890abc-SJC",
               "User-Agent": "ClaudeBot/1.0 (+https://www.anthropic.com)",
               Accept: "text/markdown, text/plain;q=0.9",
+              "Sec-Fetch-Mode": "navigate",
+              "Sec-Fetch-Dest": "document",
+              traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
               Referer: "https://news.ycombinator.com/item?id=42000000&secret=123",
               Authorization: "Bearer super-secret-user-token",
               Cookie: "session=private-cookie",
@@ -111,10 +114,12 @@ describe("cloudflare-tail-worker", () => {
         cpuTime: 11.4,
         event: {
           request: {
-            url: "https://console.scopedb.cloud/api/query?workspace=ws_123",
+            url: "https://console.scopedb.cloud/invitations/inv_secret_token_999?workspace=ws_123",
             method: "POST",
             headers: {
               "cf-ray": "8dc9999999999def-FRA",
+              "Next-Router-Prefetch": "1",
+              RSC: "1",
             },
             cf: {
               colo: "FRA",
@@ -174,6 +179,11 @@ describe("cloudflare-tail-worker", () => {
     const siteAttrs = siteInvocation["attributes"] as Record<string, unknown>;
     assert.equal(siteAttrs["user_agent"], "ClaudeBot/1.0 (+https://www.anthropic.com)");
     assert.equal(siteAttrs["accept"], "text/markdown, text/plain;q=0.9");
+    assert.equal(siteAttrs["sec_fetch_mode"], "navigate");
+    assert.equal(siteAttrs["sec_fetch_dest"], "document");
+    assert.equal(siteAttrs["is_prefetch"], false);
+    assert.equal(siteAttrs["is_rsc"], false);
+    assert.equal(siteAttrs["trace_id"], "4bf92f3577b34da6a3ce929d0e0e4736");
     assert.equal(siteAttrs["referer_host"], "news.ycombinator.com");
     assert.equal(siteAttrs["referer_path"], "/item");
     assert.equal(siteAttrs["utm_source"], "hackernews");
@@ -206,8 +216,11 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(consoleInvocation["event_type"], "worker.invocation");
     assert.equal(consoleInvocation["level"], "error");
     assert.equal(consoleInvocation["host"], "console.scopedb.cloud");
-    assert.equal(consoleInvocation["path"], "/api/query");
+    assert.equal(consoleInvocation["path"], "/invitations/:token");
     assert.equal(consoleInvocation["status"], 502);
+    const consoleAttrs = consoleInvocation["attributes"] as Record<string, unknown>;
+    assert.equal(consoleAttrs["is_prefetch"], true);
+    assert.equal(consoleAttrs["is_rsc"], true);
 
     assert.equal(consoleException["service"], "scopedb-console");
     assert.equal(consoleException["event_type"], "worker.exception");
@@ -223,6 +236,7 @@ describe("cloudflare-tail-worker", () => {
     assert.ok(!serializedBatch.includes("private-cookie"));
     assert.ok(!serializedBatch.includes("secret=123"));
     assert.ok(!serializedBatch.includes("ws_123"));
+    assert.ok(!serializedBatch.includes("inv_secret_token_999"));
   });
 
   it("supports custom shouldRecord filtering and validates required bindings", async () => {
@@ -296,6 +310,7 @@ describe("cloudflare-tail-worker", () => {
 
     for (const viewName of [
       "v_cloudflare_requests",
+      "v_cloudflare_pageviews",
       "v_cloudflare_errors",
       "v_cloudflare_ai_bots",
     ]) {
