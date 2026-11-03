@@ -15,18 +15,36 @@
 name: Deploy Worker
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'wrangler.toml'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
   repository_dispatch:
 
 permissions:
   contents: read
+  deployments: write
+
+concurrency:
+  group: cloudflare-tail-worker-deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Deploy to Cloudflare
+    name: Deploy production
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: production
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -34,7 +52,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Publish Worker
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: pnpm exec wrangler deploy
