@@ -124,7 +124,6 @@ LIMIT 25
 ```scopeql
 FROM scopedb.public.v_cloudflare_pageviews
 WHERE occurred_at >= NOW() - '168h'::interval
-  AND (referer_host IS NULL OR referer_host != host)
 GROUP BY continent, country, referer_host, referer_path, utm_source
 AGGREGATE count() AS pageviews
 ORDER BY pageviews DESC
@@ -148,7 +147,7 @@ With the [ScopeDB Agent Skill](https://github.com/scopedb/scopedb-skills) (`$sco
 Use $scopedb to analyze our Cloudflare web and AI traffic over the last 168 hours from scopedb.public.v_cloudflare_pageviews and scopedb.public.v_cloudflare_ai_bots, and render @scopedb/scopeview interactive HTML charts for:
 1. Hourly or 5-minute pageviews over time (line chart)
 2. Top 15 visited pages by path (top-list chart)
-3. Top external referrers (where referer_host != host) and UTM sources (top-list chart)
+3. Top external referrers and UTM sources (top-list chart)
 4. Top visitor countries and cities (top-list chart)
 5. AI agent and crawler fetches of /llms.txt and *.md by path and bot category (top-list chart)
 ```
