@@ -169,6 +169,11 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
         exception_count: exceptions.length,
         user_agent: boundedString(headerValue(request?.headers, "user-agent"), MAX_USER_AGENT_LENGTH),
         accept: boundedString(headerValue(request?.headers, "accept"), MAX_ACCEPT_LENGTH),
+        sec_fetch_mode: stringField(headerValue(request?.headers, "sec-fetch-mode")),
+        sec_fetch_dest: stringField(headerValue(request?.headers, "sec-fetch-dest")),
+        is_prefetch: isPrefetchRequest(request?.headers),
+        is_rsc: headerValue(request?.headers, "rsc") === "1",
+        trace_id: extractTraceId(headerValue(request?.headers, "traceparent")),
         referer_host: referer.host,
         referer_path: referer.path,
         utm_source: attribution.utm_source,
@@ -344,7 +349,7 @@ function extractUrlMetadata(rawUrl: string | undefined): {
     const parsed = new URL(rawUrl);
     return {
       host: parsed.hostname.length > 0 ? parsed.hostname : null,
-      path: parsed.pathname.length > 0 ? parsed.pathname : null,
+      path: parsed.pathname.length > 0 ? sanitizeUrlPath(parsed.pathname) : null,
       attribution: {
         utm_source: boundedString(nonEmptyString(parsed.searchParams.get("utm_source")), 128),
         utm_medium: boundedString(nonEmptyString(parsed.searchParams.get("utm_medium")), 128),
@@ -355,6 +360,43 @@ function extractUrlMetadata(rawUrl: string | undefined): {
   } catch {
     return { host: null, path: null, attribution: EMPTY_ATTRIBUTION };
   }
+}
+
+function sanitizeUrlPath(pathname: string): string {
+  return pathname.replace(/^\/invitations\/[^/]+/, "/invitations/:token");
+}
+
+function isPrefetchRequest(headers: Readonly<Record<string, string>> | undefined): boolean {
+  if (headers === undefined) {
+    return false;
+  }
+  if (headerValue(headers, "next-router-prefetch") === "1") {
+    return true;
+  }
+  if (headerValue(headers, "purpose")?.toLowerCase() === "prefetch") {
+    return true;
+  }
+  if (headerValue(headers, "sec-purpose")?.toLowerCase().includes("prefetch") === true) {
+    return true;
+  }
+  if (headerValue(headers, "x-moz")?.toLowerCase() === "prefetch") {
+    return true;
+  }
+  return false;
+}
+
+const TRACEPARENT_PATTERN = /^00-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/i;
+
+function extractTraceId(traceparent: string | null): string | null {
+  if (traceparent === null) {
+    return null;
+  }
+  const match = TRACEPARENT_PATTERN.exec(traceparent.trim());
+  const traceId = match?.[1]?.toLowerCase() ?? null;
+  if (traceId === null || traceId === "00000000000000000000000000000000") {
+    return null;
+  }
+  return traceId;
 }
 
 function extractVerifiedBotCategory(cf: Readonly<Record<string, unknown>> | undefined): string | null {
