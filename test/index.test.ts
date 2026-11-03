@@ -56,19 +56,23 @@ describe("cloudflare-tail-worker", () => {
         cpuTime: 3.2,
         event: {
           request: {
-            url: "https://www.scopedb.io/docs/guides/sdks/nodejs.md?token=secret-query#section",
+            url: "https://www.scopedb.io/docs/guides/sdks/nodejs.md?utm_source=hackernews&utm_medium=social&ref=launch&token=secret-query#section",
             method: "GET",
             headers: {
               "CF-Ray": "8dc1234567890abc-SJC",
               "User-Agent": "ClaudeBot/1.0 (+https://www.anthropic.com)",
               Accept: "text/markdown, text/plain;q=0.9",
-              Referer: "https://www.google.com/search?q=scopedb+cloudflare&secret=123",
+              Referer: "https://news.ycombinator.com/item?id=42000000&secret=123",
               Authorization: "Bearer super-secret-user-token",
               Cookie: "session=private-cookie",
             },
             cf: {
               colo: "SJC",
+              continent: "NA",
               country: "US",
+              region: "California",
+              city: "San Jose",
+              timezone: "America/Los_Angeles",
               asn: 399358,
               asOrganization: "Anthropic, PBC",
               httpProtocol: "HTTP/2",
@@ -170,9 +174,18 @@ describe("cloudflare-tail-worker", () => {
     const siteAttrs = siteInvocation["attributes"] as Record<string, unknown>;
     assert.equal(siteAttrs["user_agent"], "ClaudeBot/1.0 (+https://www.anthropic.com)");
     assert.equal(siteAttrs["accept"], "text/markdown, text/plain;q=0.9");
-    assert.equal(siteAttrs["referer_host"], "www.google.com");
+    assert.equal(siteAttrs["referer_host"], "news.ycombinator.com");
+    assert.equal(siteAttrs["referer_path"], "/item");
+    assert.equal(siteAttrs["utm_source"], "hackernews");
+    assert.equal(siteAttrs["utm_medium"], "social");
+    assert.equal(siteAttrs["utm_campaign"], null);
+    assert.equal(siteAttrs["ref"], "launch");
     assert.equal(siteAttrs["colo"], "SJC");
+    assert.equal(siteAttrs["continent"], "NA");
     assert.equal(siteAttrs["country"], "US");
+    assert.equal(siteAttrs["region"], "California");
+    assert.equal(siteAttrs["city"], "San Jose");
+    assert.equal(siteAttrs["timezone"], "America/Los_Angeles");
     assert.equal(siteAttrs["asn"], 399358);
     assert.equal(siteAttrs["as_organization"], "Anthropic, PBC");
     assert.equal(siteAttrs["verified_bot_category"], "AI Crawler");

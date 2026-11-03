@@ -25,7 +25,8 @@ flowchart LR
 
 - **Zero application code changes**: Producer Workers only add `tail_consumers = [{ service = "scopedb-tail" }]` to `wrangler.toml`.
 - **Zero Node.js compatibility polyfills**: Built on the [`scopedb`](https://github.com/scopedb/scopedb-js) Web Fetch + `CompressionStream` runtime (`< 10 KiB`, no `nodejs_compat` required).
-- **Safe by default**: URL query strings, URL fragments, `Referer` paths/queries, and sensitive headers (`Authorization`, `Cookie`, `Set-Cookie`) are never stored. Arbitrary `console.log` payloads (`BigInt`, `NaN`/`Infinity`, `Error`, `Date`, circular references) are sanitized before serialization.
+- **Privacy-first edge web analytics**: Captures Cloudflare edge geography (`continent`, `country`, `region`, `city`, `timezone`, `colo`, `asn`, `as_organization`), referrer (`referer_host`, `referer_path`), and campaign attribution (`utm_source`, `utm_medium`, `utm_campaign`, `ref`) without storing raw client IP addresses or requiring cookies.
+- **Safe by default**: Sensitive URL query strings, URL fragments, `Referer` query strings, and sensitive headers (`Authorization`, `Cookie`, `Set-Cookie`) are never stored. Arbitrary `console.log` payloads (`BigInt`, `NaN`/`Infinity`, `Error`, `Date`, circular references) are sanitized before serialization.
 - **Cost-efficient on Cloudflare**: Cloudflare Tail Worker invocations do not incur per-request charges and are billed only on Worker CPU milliseconds, bypassing Cloudflare Observability per-GB ingestion and storage meters.
 
 ## 3-step quickstart
@@ -113,6 +114,18 @@ WHERE occurred_at >= NOW() - '7d'::interval
 GROUP BY path, user_agent, as_organization
 AGGREGATE count() AS fetches
 ORDER BY fetches DESC
+LIMIT 25
+```
+
+### Analyze top referrers, campaigns, and visitor geography
+
+```scopeql
+FROM scopedb.public.v_cloudflare_requests
+WHERE occurred_at >= NOW() - '7d'::interval
+  AND status = 200
+GROUP BY continent, country, referer_host, referer_path, utm_source
+AGGREGATE count() AS views
+ORDER BY views DESC
 LIMIT 25
 ```
 

@@ -140,7 +140,8 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
   const outcome = nonEmptyString(item.outcome) ?? "unknown";
   const request = item.event?.request;
   const method = nonEmptyString(request?.method);
-  const { host, path } = extractUrlHostAndPath(request?.url);
+  const { host, path, attribution } = extractUrlMetadata(request?.url);
+  const referer = extractUrlMetadata(headerValue(request?.headers, "referer") ?? undefined);
   const status = safeHttpStatus(item.event?.response?.status);
   const rayId = headerValue(request?.headers, "cf-ray");
   const logs = item.logs ?? [];
@@ -168,9 +169,18 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
         exception_count: exceptions.length,
         user_agent: boundedString(headerValue(request?.headers, "user-agent"), MAX_USER_AGENT_LENGTH),
         accept: boundedString(headerValue(request?.headers, "accept"), MAX_ACCEPT_LENGTH),
-        referer_host: extractUrlHostAndPath(headerValue(request?.headers, "referer") ?? undefined).host,
+        referer_host: referer.host,
+        referer_path: referer.path,
+        utm_source: attribution.utm_source,
+        utm_medium: attribution.utm_medium,
+        utm_campaign: attribution.utm_campaign,
+        ref: attribution.ref,
         colo: stringField(request?.cf?.["colo"]),
+        continent: stringField(request?.cf?.["continent"]),
         country: stringField(request?.cf?.["country"]),
+        region: stringField(request?.cf?.["region"]),
+        city: stringField(request?.cf?.["city"]),
+        timezone: stringField(request?.cf?.["timezone"]),
         asn: safeInteger(request?.cf?.["asn"]),
         as_organization: stringField(request?.cf?.["asOrganization"]),
         http_protocol: stringField(request?.cf?.["httpProtocol"]),
@@ -306,19 +316,44 @@ function formatTimestamp(epochMs: number | null | undefined): string {
   return new Date().toISOString();
 }
 
-// Keep only the URL hostname and pathname so query-string tokens or credentials are never stored.
-function extractUrlHostAndPath(rawUrl: string | undefined): { host: string | null; path: string | null } {
+interface UrlAttribution {
+  utm_source: string | null;
+  utm_medium: string | null;
+  utm_campaign: string | null;
+  ref: string | null;
+}
+
+const EMPTY_ATTRIBUTION: UrlAttribution = {
+  utm_source: null,
+  utm_medium: null,
+  utm_campaign: null,
+  ref: null,
+};
+
+// Keep only the URL hostname, pathname, and allowlisted public attribution tags
+// so query-string tokens or credentials are never stored.
+function extractUrlMetadata(rawUrl: string | undefined): {
+  host: string | null;
+  path: string | null;
+  attribution: UrlAttribution;
+} {
   if (typeof rawUrl !== "string" || rawUrl.length === 0) {
-    return { host: null, path: null };
+    return { host: null, path: null, attribution: EMPTY_ATTRIBUTION };
   }
   try {
     const parsed = new URL(rawUrl);
     return {
       host: parsed.hostname.length > 0 ? parsed.hostname : null,
       path: parsed.pathname.length > 0 ? parsed.pathname : null,
+      attribution: {
+        utm_source: boundedString(nonEmptyString(parsed.searchParams.get("utm_source")), 128),
+        utm_medium: boundedString(nonEmptyString(parsed.searchParams.get("utm_medium")), 128),
+        utm_campaign: boundedString(nonEmptyString(parsed.searchParams.get("utm_campaign")), 128),
+        ref: boundedString(nonEmptyString(parsed.searchParams.get("ref")), 128),
+      },
     };
   } catch {
-    return { host: null, path: null };
+    return { host: null, path: null, attribution: EMPTY_ATTRIBUTION };
   }
 }
 
