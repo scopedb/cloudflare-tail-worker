@@ -1,0 +1,59 @@
+# Copyright 2026 ScopeDB, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: cloudflare_worker_events
+comment: Cloudflare Worker invocations, console logs, and uncaught exceptions
+columns:
+  - name: event_id
+    data_type: string
+    comment: Unique row identifier
+  - name: occurred_at
+    data_type: timestamp
+    comment: Event timestamp in UTC
+  - name: service
+    data_type: string
+    comment: Producer Worker name (scriptName)
+  - name: event_type
+    data_type: string
+    comment: worker.invocation, worker.log, or worker.exception
+  - name: outcome
+    data_type: string
+    comment: Worker execution outcome (ok, exception, exceededCpu, etc.)
+  - name: level
+    data_type: string
+    comment: Normalized severity (debug, info, warn, error)
+  - name: method
+    data_type: string
+    comment: HTTP request method when triggered by fetch
+  - name: host
+    data_type: string
+    comment: Request URL hostname
+  - name: path
+    data_type: string
+    comment: Request URL pathname without query parameters
+  - name: status
+    data_type: int
+    comment: HTTP response status code
+  - name: ray_id
+    data_type: string
+    comment: Cloudflare Ray ID (cf-ray)
+  - name: message
+    data_type: string
+    comment: Human-readable event summary, log line, or exception message
+  - name: attributes
+    data_type: object
+    comment: Structured invocation timings, edge metadata, log arguments, or stack trace
+cluster_by:
+  - service
+  - occurred_at
