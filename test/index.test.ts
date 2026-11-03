@@ -1,0 +1,243 @@
+/*
+ * Copyright 2026 ScopeDB, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { gunzipSync } from "node:zlib";
+import { createTailWorker, type TailItem, tailItemsToRows } from "../src/index.js";
+
+describe("cloudflare-tail-worker", () => {
+  it("normalizes multi-service invocations, logs, and exceptions while redacting sensitive URLs and headers", async () => {
+    const requests: { url: string; headers: Headers; rawText: string; lines: Record<string, unknown>[] }[] = [];
+
+    const worker = createTailWorker({
+      fetch: async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        const headers = new Headers(init?.headers);
+        const rawBody = init?.body;
+        assert.ok(rawBody instanceof Uint8Array || rawBody instanceof ArrayBuffer);
+        const decompressed = gunzipSync(
+          rawBody instanceof Uint8Array ? rawBody : new Uint8Array(rawBody),
+        ).toString("utf8");
+        const lines = decompressed
+          .trim()
+          .split("\n")
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line) as Record<string, unknown>);
+        requests.push({ url, headers, rawText: decompressed, lines });
+        return Response.json({ num_rows_inserted: lines.length });
+      },
+    });
+
+    const circular: Record<string, unknown> = { stage: "upstream" };
+    circular["self"] = circular;
+
+    const events: TailItem[] = [
+      {
+        scriptName: "scopedb-site",
+        outcome: "ok",
+        eventTimestamp: 1730620800000,
+        wallTime: 18.5,
+        cpuTime: 3.2,
+        event: {
+          request: {
+            url: "https://www.scopedb.io/docs/guides/sdks/nodejs.md?token=secret-query#section",
+            method: "GET",
+            headers: {
+              "CF-Ray": "8dc1234567890abc-SJC",
+              "User-Agent": "ClaudeBot/1.0 (+https://www.anthropic.com)",
+              Accept: "text/markdown, text/plain;q=0.9",
+              Referer: "https://www.google.com/search?q=scopedb+cloudflare&secret=123",
+              Authorization: "Bearer super-secret-user-token",
+              Cookie: "session=private-cookie",
+            },
+            cf: {
+              colo: "SJC",
+              country: "US",
+              asn: 399358,
+              asOrganization: "Anthropic, PBC",
+              httpProtocol: "HTTP/2",
+              tlsVersion: "TLSv1.3",
+              botManagement: {
+                verifiedBotCategory: "AI Crawler",
+              },
+            },
+          },
+          response: {
+            status: 200,
+          },
+        },
+        logs: [
+          {
+            timestamp: 1730620800010,
+            level: "log",
+            message: [
+              "served markdown doc",
+              {
+                safe_bigint: BigInt("9007199254740993"),
+                overflow_bigint: BigInt("9223372036854775808"),
+                unsafe_int: 9007199254740992,
+                non_finite: Number.NaN,
+                circular,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        scriptName: "scopedb-console",
+        outcome: "exception",
+        eventTimestamp: 1730620805000,
+        wallTime: 142.0,
+        cpuTime: 11.4,
+        event: {
+          request: {
+            url: "https://console.scopedb.cloud/api/query?workspace=ws_123",
+            method: "POST",
+            headers: {
+              "cf-ray": "8dc9999999999def-FRA",
+            },
+            cf: {
+              colo: "FRA",
+              country: "DE",
+            },
+          },
+          response: {
+            status: 502,
+          },
+        },
+        exceptions: [
+          {
+            timestamp: 1730620805100,
+            name: "TypeError",
+            message: "Upstream gateway timeout",
+            stack: "TypeError: Upstream gateway timeout\n    at fetchUpstream (worker.js:42:11)",
+          },
+        ],
+      },
+    ];
+
+    await worker.tail(events, {
+      SCOPEDB_ENDPOINT: "https://workspace.scopedb.cloud",
+      SCOPEDB_API_KEY: "test-api-key",
+    });
+
+    assert.equal(requests.length, 1);
+    const req = requests[0]!;
+    assert.equal(
+      req.url,
+      "https://workspace.scopedb.cloud/v1/catalog/databases/scopedb/schemas/public/tables/cloudflare_worker_events/ingest",
+    );
+    assert.equal(req.headers.get("authorization"), "Bearer test-api-key");
+    assert.equal(req.headers.get("content-encoding"), "gzip");
+    assert.equal(req.headers.get("content-type"), "application/x-ndjson");
+    assert.equal(req.lines.length, 4);
+    assert.equal(req.rawText.includes('"safe_bigint":9007199254740993'), true);
+
+    const [siteInvocation, siteLog, consoleInvocation, consoleException] = req.lines as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+
+    assert.equal(siteInvocation["service"], "scopedb-site");
+    assert.equal(siteInvocation["event_type"], "worker.invocation");
+    assert.equal(siteInvocation["outcome"], "ok");
+    assert.equal(siteInvocation["level"], "info");
+    assert.equal(siteInvocation["method"], "GET");
+    assert.equal(siteInvocation["host"], "www.scopedb.io");
+    assert.equal(siteInvocation["path"], "/docs/guides/sdks/nodejs.md");
+    assert.equal(siteInvocation["status"], 200);
+    assert.equal(siteInvocation["ray_id"], "8dc1234567890abc-SJC");
+    assert.equal(siteInvocation["message"], "GET /docs/guides/sdks/nodejs.md -> 200");
+
+    const siteAttrs = siteInvocation["attributes"] as Record<string, unknown>;
+    assert.equal(siteAttrs["user_agent"], "ClaudeBot/1.0 (+https://www.anthropic.com)");
+    assert.equal(siteAttrs["accept"], "text/markdown, text/plain;q=0.9");
+    assert.equal(siteAttrs["referer_host"], "www.google.com");
+    assert.equal(siteAttrs["colo"], "SJC");
+    assert.equal(siteAttrs["country"], "US");
+    assert.equal(siteAttrs["asn"], 399358);
+    assert.equal(siteAttrs["as_organization"], "Anthropic, PBC");
+    assert.equal(siteAttrs["verified_bot_category"], "AI Crawler");
+
+    assert.equal(siteLog["service"], "scopedb-site");
+    assert.equal(siteLog["event_type"], "worker.log");
+    assert.equal(siteLog["level"], "info");
+    const logAttrs = siteLog["attributes"] as Record<string, unknown>;
+    assert.equal(logAttrs["invocation_id"], siteInvocation["event_id"]);
+    const args = logAttrs["arguments"] as unknown[];
+    const meta = args[1] as Record<string, unknown>;
+    assert.equal(meta["overflow_bigint"], "9223372036854775808");
+    assert.equal(meta["unsafe_int"], "9007199254740992");
+    assert.equal(meta["non_finite"], "NaN");
+    assert.deepEqual(meta["circular"], { stage: "upstream", self: "[Circular]" });
+
+    assert.equal(consoleInvocation["service"], "scopedb-console");
+    assert.equal(consoleInvocation["event_type"], "worker.invocation");
+    assert.equal(consoleInvocation["level"], "error");
+    assert.equal(consoleInvocation["host"], "console.scopedb.cloud");
+    assert.equal(consoleInvocation["path"], "/api/query");
+    assert.equal(consoleInvocation["status"], 502);
+
+    assert.equal(consoleException["service"], "scopedb-console");
+    assert.equal(consoleException["event_type"], "worker.exception");
+    assert.equal(consoleException["level"], "error");
+    assert.equal(consoleException["message"], "TypeError: Upstream gateway timeout");
+    const excAttrs = consoleException["attributes"] as Record<string, unknown>;
+    assert.equal(excAttrs["invocation_id"], consoleInvocation["event_id"]);
+    assert.equal(excAttrs["exception_name"], "TypeError");
+
+    const serializedBatch = JSON.stringify(req.lines);
+    assert.ok(!serializedBatch.includes("secret-query"));
+    assert.ok(!serializedBatch.includes("super-secret-user-token"));
+    assert.ok(!serializedBatch.includes("private-cookie"));
+    assert.ok(!serializedBatch.includes("secret=123"));
+    assert.ok(!serializedBatch.includes("ws_123"));
+  });
+
+  it("supports custom shouldRecord filtering and validates required bindings", async () => {
+    let fetchCalls = 0;
+    const worker = createTailWorker({
+      shouldRecord: (item) => item.outcome !== "ok",
+      fetch: async () => {
+        fetchCalls += 1;
+        return new Response("{}", { status: 200 });
+      },
+    });
+
+    await worker.tail(
+      [{ scriptName: "scopedb-site", outcome: "ok" }],
+      { SCOPEDB_ENDPOINT: "https://workspace.scopedb.cloud", SCOPEDB_API_KEY: "key" },
+    );
+    assert.equal(fetchCalls, 0);
+
+    await assert.rejects(
+      () =>
+        worker.tail(
+          [{ scriptName: "scopedb-site", outcome: "exception" }],
+          { SCOPEDB_ENDPOINT: "", SCOPEDB_API_KEY: "key" },
+        ),
+      /Missing Worker binding: SCOPEDB_ENDPOINT/,
+    );
+
+    const rows = tailItemsToRows([{ outcome: "ok" }]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.service, "unknown");
+    assert.equal(rows[0]?.message, "invocation (ok)");
+  });
+});

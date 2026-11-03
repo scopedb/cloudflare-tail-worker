@@ -1,0 +1,46 @@
+{
+  "name": "cloudflare-tail-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Tail Worker template for streaming Worker invocations, console logs, and uncaught exceptions into ScopeDB",
+  "license": "Apache-2.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scopedb/cloudflare-tail-worker.git"
+  },
+  "homepage": "https://www.scopedb.io",
+  "bugs": {
+    "url": "https://github.com/scopedb/cloudflare-tail-worker/issues"
+  },
+  "cloudflare": {
+    "bindings": {
+      "SCOPEDB_ENDPOINT": {
+        "description": "Your ScopeDB Cloud workspace endpoint URL (for example, https://<workspace>.scopedb.cloud)."
+      },
+      "SCOPEDB_API_KEY": {
+        "description": "Your ScopeDB workspace API key with append permissions."
+      }
+    }
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "build:test": "node -e \"require('node:fs').rmSync('dist-test', { recursive: true, force: true })\" && tsc -p tsconfig.test.json",
+    "check": "tsc -p tsconfig.json --noEmit && wrangler deploy --dry-run --outdir dist-worker && node -e \"require('node:fs').rmSync('dist-worker', { recursive: true, force: true })\"",
+    "test": "pnpm run build:test && node --test dist-test/test/*.test.js",
+    "ci": "pnpm test && pnpm run check"
+  },
+  "dependencies": {
+    "scopedb": "^0.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.8.2",
+    "wrangler": "^4.151.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.32.1"
+}
