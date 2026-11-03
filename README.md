@@ -112,18 +112,19 @@ LIMIT 50
 
 ```scopeql
 FROM scopedb.public.v_cloudflare_ai_bots
-WHERE occurred_at >= NOW() - '7d'::interval
+WHERE occurred_at >= NOW() - '168h'::interval
 GROUP BY path, user_agent, as_organization
 AGGREGATE count() AS fetches
 ORDER BY fetches DESC
 LIMIT 25
 ```
 
-### Analyze top referrers, campaigns, and visitor geography
+### Analyze top external referrers, campaigns, and visitor geography
 
 ```scopeql
 FROM scopedb.public.v_cloudflare_pageviews
-WHERE occurred_at >= NOW() - '7d'::interval
+WHERE occurred_at >= NOW() - '168h'::interval
+  AND (referer_host IS NULL OR referer_host != host)
 GROUP BY continent, country, referer_host, referer_path, utm_source
 AGGREGATE count() AS pageviews
 ORDER BY pageviews DESC
@@ -139,17 +140,17 @@ SELECT occurred_at, event_type, level, message, attributes
 ORDER BY occurred_at ASC
 ```
 
-## Render Plausible-style web analytics charts with `$scopedb` and `@scopedb/scopeview`
+## Render web and AI traffic charts with `$scopedb` and `@scopedb/scopeview`
 
 With the [ScopeDB Agent Skill](https://github.com/scopedb/scopedb-skills) (`$scopedb`) and [`@scopedb/scopeview`](https://github.com/scopedb/scopeview), your coding agent can query `v_cloudflare_pageviews` and `v_cloudflare_ai_bots` and export offline interactive HTML charts on demand:
 
 ```text
-Use $scopedb to analyze our Cloudflare web and AI traffic over the last 7 days from scopedb.public.v_cloudflare_pageviews and scopedb.public.v_cloudflare_ai_bots, and render @scopedb/scopeview interactive HTML charts for:
-1. Hourly or daily pageviews over time (line chart)
-2. Top 15 visited pages by path (ranked bar chart)
-3. Top referrers (referer_host, referer_path) and UTM sources (ranked bar chart)
-4. Top visitor countries and cities (ranked bar chart)
-5. AI agent and crawler fetches of /llms.txt and *.md by user_agent and path (ranked bar chart)
+Use $scopedb to analyze our Cloudflare web and AI traffic over the last 168 hours from scopedb.public.v_cloudflare_pageviews and scopedb.public.v_cloudflare_ai_bots, and render @scopedb/scopeview interactive HTML charts for:
+1. Hourly or 5-minute pageviews over time (line chart)
+2. Top 15 visited pages by path (top-list chart)
+3. Top external referrers (where referer_host != host) and UTM sources (top-list chart)
+4. Top visitor countries and cities (top-list chart)
+5. AI agent and crawler fetches of /llms.txt and *.md by path and bot category (top-list chart)
 ```
 
 ## Custom filtering and sampling
