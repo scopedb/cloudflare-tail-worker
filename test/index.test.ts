@@ -15,8 +15,10 @@
  */
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import { gunzipSync } from "node:zlib";
+import { type CatalogTable, type CatalogView, Client } from "scopedb";
 import { createTailWorker, type TailItem, tailItemsToRows } from "../src/index.js";
 
 describe("cloudflare-tail-worker", () => {
@@ -239,5 +241,56 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0]?.service, "unknown");
     assert.equal(rows[0]?.message, "invocation (ok)");
+  });
+
+  it("validates Catalog JSON table and view definitions against the ScopeDB SDK and emitted row columns", async () => {
+    const tableDef = JSON.parse(
+      await readFile(new URL("../../catalog/table.json", import.meta.url), "utf8"),
+    ) as CatalogTable;
+
+    const client = new Client("https://workspace.scopedb.cloud", {
+      apiKey: "test-key",
+      fetch: async (_input, init) => {
+        const body = JSON.parse(String(init?.body)) as unknown;
+        return new Response(
+          JSON.stringify({ before: null, after: body, destructive: false }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json", ETag: '"v1"' },
+          },
+        );
+      },
+    });
+
+    const tableResult = await client
+      .catalog()
+      .table("scopedb", "public", "cloudflare_worker_events")
+      .apply(tableDef);
+    assert.equal(tableResult.after?.name, "cloudflare_worker_events");
+
+    const expectedColumns = (tableDef.columns ?? []).map((col) => col.name);
+    const sampleRows = tailItemsToRows([
+      {
+        scriptName: "scopedb-site",
+        outcome: "ok",
+        logs: [{ level: "info", message: ["ok"] }],
+        exceptions: [{ name: "Error", message: "boom" }],
+      },
+    ]);
+    for (const row of sampleRows) {
+      assert.deepEqual(Object.keys(row), expectedColumns);
+    }
+
+    for (const viewName of [
+      "v_cloudflare_requests",
+      "v_cloudflare_errors",
+      "v_cloudflare_ai_bots",
+    ]) {
+      const viewDef = JSON.parse(
+        await readFile(new URL(`../../catalog/${viewName}.json`, import.meta.url), "utf8"),
+      ) as CatalogView;
+      const viewResult = await client.catalog().view("scopedb", "public", viewName).apply(viewDef);
+      assert.equal(viewResult.after?.name, viewName);
+    }
   });
 });

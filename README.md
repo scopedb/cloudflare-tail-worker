@@ -8,16 +8,19 @@ Stream Cloudflare Worker invocations, `console.*` logs, and uncaught exceptions 
 
 In Cloudflare Workers, a single [Tail Worker](https://developers.cloudflare.com/workers/observability/logs/tail-workers/) (`scopedb-tail`) can receive execution events from any number of producer Workers in the same Cloudflare account via `tail_consumers`. Every event batch delivered by Cloudflare includes the producer Worker's `scriptName`, which `scopedb-tail` maps to the `service` column in ScopeDB:
 
-```text
-┌───────────────────┐  tail_consumers (scriptName = "site-worker")
-│    site-worker    ├─────────────────────────────────────────────┐
-└───────────────────┘                                             ▼
-┌───────────────────┐  tail_consumers (scriptName = "api-worker")  ┌──────────────────┐  HTTPS (NDJSON + gzip)  ┌──────────────────────────┐
-│    api-worker     ├────────────────────────────────────────────►│   scopedb-tail   ├────────────────────────►│       ScopeDB Cloud      │
-└───────────────────┘                                             │ (1 per account)  │                         │ cloudflare_worker_events │
-┌───────────────────┐  tail_consumers (scriptName = "app-console") └──────────────────┘                         └──────────────────────────┘
-│    app-console    ├─────────────────────────────────────────────▲
-└───────────────────┘
+```mermaid
+flowchart LR
+  subgraph cf["Cloudflare Account"]
+    site["site-worker"]
+    api["api-worker"]
+    console["app-console"]
+    tail["scopedb-tail (1 per account)"]
+    site -- "tail_consumers (scriptName)" --> tail
+    api -- "tail_consumers (scriptName)" --> tail
+    console -- "tail_consumers (scriptName)" --> tail
+  end
+  scopedb[("ScopeDB Cloud (cloudflare_worker_events)")]
+  tail -- "HTTPS (NDJSON + gzip)" --> scopedb
 ```
 
 - **Zero application code changes**: Producer Workers only add `tail_consumers = [{ service = "scopedb-tail" }]` to `wrangler.toml`.
@@ -29,14 +32,21 @@ In Cloudflare Workers, a single [Tail Worker](https://developers.cloudflare.com/
 
 ### 1. Create the table and views in ScopeDB
 
-Run [schema.scopeql](schema.scopeql) in the ScopeDB Console SQL editor or with the [ScopeDB CLI](https://github.com/scopedb/scopedb-cli) (`scope query -f schema.scopeql`). This creates the base table and three ready-to-query views:
+Apply the Catalog JSON definitions in [`catalog/`](catalog) using the [ScopeDB CLI](https://www.scopedb.io/docs/guides/scopedb-cli/catalog), or open **Data** → **Create table** → **JSON** in ScopeDB Console and paste [`catalog/table.json`](catalog/table.json):
 
-| Object                                     | Kind  | Purpose                                                                                                             |
-| ------------------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------- |
-| `scopedb.public.cloudflare_worker_events`  | Table | Base event table storing `worker.invocation`, `worker.log`, and `worker.exception` rows clustered by `service`      |
-| `scopedb.public.v_cloudflare_requests`     | View  | Flattened HTTP/Worker invocation metrics (`wall_time_ms`, `cpu_time_ms`, `colo`, `country`, `user_agent`, `status`) |
-| `scopedb.public.v_cloudflare_errors`       | View  | All `5xx` responses, non-`ok` Worker outcomes, `console.error` logs, and uncaught exceptions with stack traces      |
-| `scopedb.public.v_cloudflare_ai_bots`      | View  | Requests to `/llms.txt` or `*.md` and traffic from AI crawlers and coding agents (`ClaudeBot`, `GPTBot`, `Cursor`)  |
+```bash
+scope catalog apply --table scopedb.public.cloudflare_worker_events -f catalog/table.json
+scope catalog apply --view scopedb.public.v_cloudflare_requests -f catalog/v_cloudflare_requests.json
+scope catalog apply --view scopedb.public.v_cloudflare_errors -f catalog/v_cloudflare_errors.json
+scope catalog apply --view scopedb.public.v_cloudflare_ai_bots -f catalog/v_cloudflare_ai_bots.json
+```
+
+| Object                                     | Kind  | Definition                                                                 | Purpose                                                                                                             |
+| ------------------------------------------ | ----- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `scopedb.public.cloudflare_worker_events`  | Table | [`catalog/table.json`](catalog/table.json)                                 | Base event table storing `worker.invocation`, `worker.log`, and `worker.exception` rows clustered by `service`      |
+| `scopedb.public.v_cloudflare_requests`     | View  | [`catalog/v_cloudflare_requests.json`](catalog/v_cloudflare_requests.json) | Flattened HTTP/Worker invocation metrics (`wall_time_ms`, `cpu_time_ms`, `colo`, `country`, `user_agent`, `status`) |
+| `scopedb.public.v_cloudflare_errors`       | View  | [`catalog/v_cloudflare_errors.json`](catalog/v_cloudflare_errors.json)     | All `5xx` responses, non-`ok` Worker outcomes, `console.error` logs, and uncaught exceptions with stack traces      |
+| `scopedb.public.v_cloudflare_ai_bots`      | View  | [`catalog/v_cloudflare_ai_bots.json`](catalog/v_cloudflare_ai_bots.json)   | Requests to `/llms.txt` or `*.md` and traffic from AI crawlers and coding agents (`ClaudeBot`, `GPTBot`, `Cursor`)  |
 
 ### 2. Deploy `scopedb-tail` once in your Cloudflare account
 
