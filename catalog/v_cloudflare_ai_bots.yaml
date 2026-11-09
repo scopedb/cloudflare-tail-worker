@@ -13,7 +13,7 @@
 # limitations under the License.
 
 name: v_cloudflare_ai_bots
-comment: Cloudflare Worker requests from AI crawlers, coding agents, and Markdown/llms.txt readers
+comment: AI-identified requests and Markdown/llms.txt access, with separate identity and content signals
 statement: |
   FROM scopedb.public.cloudflare_worker_events
   WHERE event_type = 'worker.invocation'
@@ -34,11 +34,11 @@ statement: |
       attributes['country']::string AS country,
       attributes['as_organization']::string AS as_organization,
       attributes['verified_bot_category']::string AS verified_bot_category
-  WHERE path = '/llms.txt'
-     OR ends_with(path, '.md')
-     OR contains(accept, 'text/markdown')
-     OR verified_bot_category IS NOT NULL
-     OR regexp_like(
-         user_agent,
-         regex => '(?i)(ClaudeBot|Claude-Web|Claude-User|Anthropic|GPTBot|ChatGPT-User|OAI-SearchBot|Codex|Cursor|PerplexityBot|Perplexity-User|CCBot|Google-Extended|Applebot-Extended|Bytespider|Amazonbot|cohere-ai|YouBot)'
-     )
+  SELECT *,
+      if(verified_bot_category IN ('AI Crawler', 'AI Assistant', 'AI Search'), true, false) AS is_verified_ai_bot,
+      if(regexp_like(
+          user_agent,
+          regex => '(?i)(ClaudeBot|Claude-Web|Claude-User|Anthropic|GPTBot|ChatGPT-User|OAI-SearchBot|Codex|Cursor|PerplexityBot|Perplexity-User|CCBot|Bytespider|Amazonbot|cohere-ai|YouBot)'
+      ), true, false) AS is_ai_user_agent,
+      if(path = '/llms.txt' OR ends_with(path, '.md') OR contains(accept, 'text/markdown'), true, false) AS is_markdown_request
+  WHERE is_verified_ai_bot OR is_ai_user_agent OR is_markdown_request

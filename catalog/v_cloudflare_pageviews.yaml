@@ -13,7 +13,7 @@
 # limitations under the License.
 
 name: v_cloudflare_pageviews
-comment: Browser pageview analytics excluding background prefetches, RSC payloads, API routes, static assets, and crawlers
+comment: Successful browser document requests observed by Workers; excludes SPA navigations, prefetches, and known bots
 statement: |
   FROM scopedb.public.cloudflare_worker_events
   WHERE event_type = 'worker.invocation'
@@ -45,12 +45,12 @@ statement: |
           NULL,
           attributes['referer_path']::string
       ) AS referer_path,
-      attributes['utm_source']::string AS utm_source,
-      attributes['utm_medium']::string AS utm_medium,
-      attributes['utm_campaign']::string AS utm_campaign,
-      attributes['utm_term']::string AS utm_term,
-      attributes['utm_content']::string AS utm_content,
-      attributes['ref']::string AS ref,
+      if(attributes['query'] IS NULL, attributes['utm_source']::string, attributes['query']['utm_source'][0]::string) AS utm_source,
+      if(attributes['query'] IS NULL, attributes['utm_medium']::string, attributes['query']['utm_medium'][0]::string) AS utm_medium,
+      if(attributes['query'] IS NULL, attributes['utm_campaign']::string, attributes['query']['utm_campaign'][0]::string) AS utm_campaign,
+      if(attributes['query'] IS NULL, attributes['utm_term']::string, attributes['query']['utm_term'][0]::string) AS utm_term,
+      if(attributes['query'] IS NULL, attributes['utm_content']::string, attributes['query']['utm_content'][0]::string) AS utm_content,
+      if(attributes['query'] IS NULL, attributes['ref']::string, attributes['query']['ref'][0]::string) AS ref,
       attributes['query'] AS query,
       attributes['user_agent']::string AS user_agent,
       attributes['sec_fetch_mode']::string AS sec_fetch_mode,
@@ -63,6 +63,8 @@ statement: |
   WHERE method = 'GET'
     AND status = 200
     AND path IS NOT NULL
+    AND sec_fetch_mode = 'navigate'
+    AND sec_fetch_dest = 'document'
     AND (is_prefetch IS NULL OR NOT is_prefetch)
     AND (is_rsc IS NULL OR NOT is_rsc)
     AND verified_bot_category IS NULL
@@ -72,4 +74,4 @@ statement: |
     AND NOT starts_with(path, '/.')
     AND NOT ends_with(path, '/__data.json')
     AND NOT regexp_like(path, regex => '(?i)[.](md|txt|xml|ico|svg|png|jpg|jpeg|webp|gif|css|js|map|json|woff2?)$')
-    AND (user_agent IS NULL OR NOT regexp_like(user_agent, regex => '(?i)(bot|crawler|spider|slurp|facebookexternalhit|feedbin|pingwatch|uptime|statuscake|cortex-xpanse|paloaltonetworks|censys|shodan|zgrab|curl|wget|python|go-http-client|axios|node-fetch|undici|okhttp|headless|Claude-User|Cursor|Codex)'))
+    AND (user_agent IS NULL OR NOT regexp_like(user_agent, regex => '(?i)(bot|crawler|spider|slurp|facebookexternalhit|feedbin|pingwatch|uptime|statuscake|cortex-xpanse|paloaltonetworks|censys|shodan|zgrab|curl|wget|python|go-http-client|axios|node-fetch|undici|okhttp|headless|Claude-User|ChatGPT-User|Perplexity-User|Anthropic|cohere-ai|Cursor|Codex)'))
