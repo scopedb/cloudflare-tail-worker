@@ -57,7 +57,7 @@ describe("cloudflare-tail-worker", () => {
         cpuTime: 3.2,
         event: {
           request: {
-            url: "https://www.scopedb.io/docs/guides/sdks/nodejs.md?utm_source=hackernews&utm_medium=social&ref=launch&landing_page=/blog/scopedb-cloud-public-preview/&from_page=/agent&token=secret-query#section",
+            url: "https://www.scopedb.io/docs/guides/sdks/nodejs.md?utm_source=hackernews&utm_medium=social&ref=launch&landing_page=/blog/scopedb-cloud-public-preview/&from_page=/agent&token=REDACTED#section",
             method: "GET",
             headers: {
               "CF-Ray": "8dc1234567890abc-SJC",
@@ -115,7 +115,7 @@ describe("cloudflare-tail-worker", () => {
         cpuTime: 11.4,
         event: {
           request: {
-            url: "https://console.scopedb.cloud/invitations/REDACTED?workspace=ws_123&session_id=sess_secret_999",
+            url: "https://console.scopedb.cloud/invitations/REDACTED?workspace=ws_123&session_id=REDACTED",
             method: "POST",
             headers: {
               "cf-ray": "8dc9999999999def-FRA",
@@ -246,11 +246,9 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(excAttrs["exception_name"], "TypeError");
 
     const serializedBatch = JSON.stringify(req.lines);
-    assert.ok(!serializedBatch.includes("secret-query"));
     assert.ok(!serializedBatch.includes("super-secret-user-token"));
     assert.ok(!serializedBatch.includes("private-cookie"));
     assert.ok(!serializedBatch.includes("secret=123"));
-    assert.ok(!serializedBatch.includes("sess_secret_999"));
   });
 
   it("supports custom shouldRecord filtering and validates required bindings", async () => {

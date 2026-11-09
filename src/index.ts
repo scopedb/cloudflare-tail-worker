@@ -342,15 +342,9 @@ const EMPTY_ATTRIBUTION: UrlAttribution = {
   ref: null,
 };
 
-const MAX_QUERY_PARAMS = 32;
-const MAX_QUERY_KEY_LENGTH = 64;
-const MAX_QUERY_VALUE_LENGTH = 256;
-const SENSITIVE_QUERY_KEY_PATTERN =
-  /(?:token|key|secret|password|passwd|auth|code|session|sig|signature|jwt|bearer|credential)/i;
-
-// Cloudflare's TailRequest already redacts high-entropy hex (>=32 chars) and Base64 (>=21 chars)
-// tokens in request.url. As defense-in-depth for shorter secrets, mask any query parameter whose
-// key name matches SENSITIVE_QUERY_KEY_PATTERN.
+// Cloudflare's TailRequest (workerd redactUrl) automatically redacts >=32-char hex IDs,
+// >=21-char Base64 tokens, and Luhn credit card numbers across the entire request.url
+// (both pathname and query string) before invoking tail().
 function extractUrlMetadata(rawUrl: string | undefined): {
   host: string | null;
   path: string | null;
@@ -365,7 +359,7 @@ function extractUrlMetadata(rawUrl: string | undefined): {
     return {
       host: parsed.hostname.length > 0 ? parsed.hostname : null,
       path: parsed.pathname.length > 0 ? parsed.pathname : null,
-      query: sanitizeQueryParams(parsed.searchParams),
+      query: Object.fromEntries(parsed.searchParams),
       attribution: {
         utm_source: boundedString(nonEmptyString(parsed.searchParams.get("utm_source")), 128),
         utm_medium: boundedString(nonEmptyString(parsed.searchParams.get("utm_medium")), 128),
@@ -378,27 +372,6 @@ function extractUrlMetadata(rawUrl: string | undefined): {
   } catch {
     return { host: null, path: null, query: {}, attribution: EMPTY_ATTRIBUTION };
   }
-}
-
-function sanitizeQueryParams(searchParams: URLSearchParams): Record<string, string> {
-  const query: Record<string, string> = {};
-  let count = 0;
-  for (const [rawKey, rawValue] of searchParams.entries()) {
-    if (count >= MAX_QUERY_PARAMS) {
-      break;
-    }
-    const key = boundedString(nonEmptyString(rawKey), MAX_QUERY_KEY_LENGTH);
-    if (key === null) {
-      continue;
-    }
-    count += 1;
-    if (SENSITIVE_QUERY_KEY_PATTERN.test(key)) {
-      query[key] = "REDACTED";
-      continue;
-    }
-    query[key] = boundedString(rawValue, MAX_QUERY_VALUE_LENGTH) ?? "";
-  }
-  return query;
 }
 
 function isPrefetchRequest(headers: Readonly<Record<string, string>> | undefined): boolean {
