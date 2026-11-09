@@ -140,7 +140,7 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
   const outcome = nonEmptyString(item.outcome) ?? "unknown";
   const request = item.event?.request;
   const method = nonEmptyString(request?.method);
-  const { host, path, attribution } = extractUrlMetadata(request?.url);
+  const { host, path, query, attribution } = extractUrlMetadata(request?.url);
   const referer = extractUrlMetadata(headerValue(request?.headers, "referer") ?? undefined);
   const status = safeHttpStatus(item.event?.response?.status);
   const rayId = headerValue(request?.headers, "cf-ray");
@@ -176,12 +176,13 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
         trace_id: extractTraceId(headerValue(request?.headers, "traceparent")),
         referer_host: referer.host,
         referer_path: referer.path,
+        query,
         utm_source: attribution.utm_source,
         utm_medium: attribution.utm_medium,
         utm_campaign: attribution.utm_campaign,
+        utm_term: attribution.utm_term,
+        utm_content: attribution.utm_content,
         ref: attribution.ref,
-        landing_page: attribution.landing_page,
-        from_page: attribution.from_page,
         colo: stringField(request?.cf?.["colo"]),
         continent: stringField(request?.cf?.["continent"]),
         country: stringField(request?.cf?.["country"]),
@@ -327,68 +328,77 @@ interface UrlAttribution {
   utm_source: string | null;
   utm_medium: string | null;
   utm_campaign: string | null;
+  utm_term: string | null;
+  utm_content: string | null;
   ref: string | null;
-  landing_page: string | null;
-  from_page: string | null;
 }
 
 const EMPTY_ATTRIBUTION: UrlAttribution = {
   utm_source: null,
   utm_medium: null,
   utm_campaign: null,
+  utm_term: null,
+  utm_content: null,
   ref: null,
-  landing_page: null,
-  from_page: null,
 };
 
-const SAFE_SITE_PATH = /^\/[a-zA-Z0-9/_.-]{0,127}$/;
+const MAX_QUERY_PARAMS = 32;
+const MAX_QUERY_KEY_LENGTH = 64;
+const MAX_QUERY_VALUE_LENGTH = 256;
+const SENSITIVE_QUERY_KEY_PATTERN =
+  /(?:token|key|secret|password|passwd|auth|code|session|sig|signature|jwt|bearer|credential)/i;
 
-// Keep only the URL hostname, pathname, and allowlisted public attribution tags
-// so query-string tokens or credentials are never stored.
+// Cloudflare's TailRequest already redacts high-entropy hex (>=32 chars) and Base64 (>=21 chars)
+// tokens in request.url. As defense-in-depth for shorter secrets, mask any query parameter whose
+// key name matches SENSITIVE_QUERY_KEY_PATTERN.
 function extractUrlMetadata(rawUrl: string | undefined): {
   host: string | null;
   path: string | null;
+  query: Record<string, string>;
   attribution: UrlAttribution;
 } {
   if (typeof rawUrl !== "string" || rawUrl.length === 0) {
-    return { host: null, path: null, attribution: EMPTY_ATTRIBUTION };
+    return { host: null, path: null, query: {}, attribution: EMPTY_ATTRIBUTION };
   }
   try {
     const parsed = new URL(rawUrl);
     return {
       host: parsed.hostname.length > 0 ? parsed.hostname : null,
-      path: parsed.pathname.length > 0 ? sanitizeUrlPath(parsed.pathname) : null,
+      path: parsed.pathname.length > 0 ? parsed.pathname : null,
+      query: sanitizeQueryParams(parsed.searchParams),
       attribution: {
         utm_source: boundedString(nonEmptyString(parsed.searchParams.get("utm_source")), 128),
         utm_medium: boundedString(nonEmptyString(parsed.searchParams.get("utm_medium")), 128),
         utm_campaign: boundedString(nonEmptyString(parsed.searchParams.get("utm_campaign")), 128),
+        utm_term: boundedString(nonEmptyString(parsed.searchParams.get("utm_term")), 128),
+        utm_content: boundedString(nonEmptyString(parsed.searchParams.get("utm_content")), 128),
         ref: boundedString(nonEmptyString(parsed.searchParams.get("ref")), 128),
-        landing_page: sanitizeSitePath(parsed.searchParams.get("landing_page")),
-        from_page: sanitizeSitePath(parsed.searchParams.get("from_page")),
       },
     };
   } catch {
-    return { host: null, path: null, attribution: EMPTY_ATTRIBUTION };
+    return { host: null, path: null, query: {}, attribution: EMPTY_ATTRIBUTION };
   }
 }
 
-function sanitizeSitePath(raw: string | null): string | null {
-  if (raw === null) {
-    return null;
+function sanitizeQueryParams(searchParams: URLSearchParams): Record<string, string> {
+  const query: Record<string, string> = {};
+  let count = 0;
+  for (const [rawKey, rawValue] of searchParams.entries()) {
+    if (count >= MAX_QUERY_PARAMS) {
+      break;
+    }
+    const key = boundedString(nonEmptyString(rawKey), MAX_QUERY_KEY_LENGTH);
+    if (key === null) {
+      continue;
+    }
+    count += 1;
+    if (SENSITIVE_QUERY_KEY_PATTERN.test(key)) {
+      query[key] = "REDACTED";
+      continue;
+    }
+    query[key] = boundedString(rawValue, MAX_QUERY_VALUE_LENGTH) ?? "";
   }
-  const trimmed = raw.trim();
-  if (!SAFE_SITE_PATH.test(trimmed) || trimmed.startsWith("//") || trimmed.includes("..")) {
-    return null;
-  }
-  const normalized = trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
-  if (normalized === "/invitations" || normalized.startsWith("/invitations/")) {
-    return null;
-  }
-  return normalized;
-}
-
-function sanitizeUrlPath(pathname: string): string {
-  return pathname.replace(/^\/invitations\/[^/]+/, "/invitations/:token");
+  return query;
 }
 
 function isPrefetchRequest(headers: Readonly<Record<string, string>> | undefined): boolean {

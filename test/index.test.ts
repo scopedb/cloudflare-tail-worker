@@ -115,7 +115,7 @@ describe("cloudflare-tail-worker", () => {
         cpuTime: 11.4,
         event: {
           request: {
-            url: "https://console.scopedb.cloud/invitations/inv_secret_token_999?workspace=ws_123&landing_page=/invitations/inv_secret_token_999&from_page=https://evil.example/phish",
+            url: "https://console.scopedb.cloud/invitations/REDACTED?workspace=ws_123&session_id=sess_secret_999",
             method: "POST",
             headers: {
               "cf-ray": "8dc9999999999def-FRA",
@@ -190,9 +190,17 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(siteAttrs["utm_source"], "hackernews");
     assert.equal(siteAttrs["utm_medium"], "social");
     assert.equal(siteAttrs["utm_campaign"], null);
+    assert.equal(siteAttrs["utm_term"], null);
+    assert.equal(siteAttrs["utm_content"], null);
     assert.equal(siteAttrs["ref"], "launch");
-    assert.equal(siteAttrs["landing_page"], "/blog/scopedb-cloud-public-preview");
-    assert.equal(siteAttrs["from_page"], "/agent");
+    assert.deepEqual(siteAttrs["query"], {
+      utm_source: "hackernews",
+      utm_medium: "social",
+      ref: "launch",
+      landing_page: "/blog/scopedb-cloud-public-preview/",
+      from_page: "/agent",
+      token: "REDACTED",
+    });
     assert.equal(siteAttrs["colo"], "SJC");
     assert.equal(siteAttrs["continent"], "NA");
     assert.equal(siteAttrs["country"], "US");
@@ -219,13 +227,15 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(consoleInvocation["event_type"], "worker.invocation");
     assert.equal(consoleInvocation["level"], "error");
     assert.equal(consoleInvocation["host"], "console.scopedb.cloud");
-    assert.equal(consoleInvocation["path"], "/invitations/:token");
+    assert.equal(consoleInvocation["path"], "/invitations/REDACTED");
     assert.equal(consoleInvocation["status"], 502);
     const consoleAttrs = consoleInvocation["attributes"] as Record<string, unknown>;
     assert.equal(consoleAttrs["is_prefetch"], true);
     assert.equal(consoleAttrs["is_rsc"], true);
-    assert.equal(consoleAttrs["landing_page"], null);
-    assert.equal(consoleAttrs["from_page"], null);
+    assert.deepEqual(consoleAttrs["query"], {
+      workspace: "ws_123",
+      session_id: "REDACTED",
+    });
 
     assert.equal(consoleException["service"], "scopedb-console");
     assert.equal(consoleException["event_type"], "worker.exception");
@@ -240,8 +250,7 @@ describe("cloudflare-tail-worker", () => {
     assert.ok(!serializedBatch.includes("super-secret-user-token"));
     assert.ok(!serializedBatch.includes("private-cookie"));
     assert.ok(!serializedBatch.includes("secret=123"));
-    assert.ok(!serializedBatch.includes("ws_123"));
-    assert.ok(!serializedBatch.includes("inv_secret_token_999"));
+    assert.ok(!serializedBatch.includes("sess_secret_999"));
   });
 
   it("supports custom shouldRecord filtering and validates required bindings", async () => {
