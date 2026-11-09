@@ -49,6 +49,8 @@ statement: |
       attributes['utm_medium']::string AS utm_medium,
       attributes['utm_campaign']::string AS utm_campaign,
       attributes['ref']::string AS ref,
+      attributes['landing_page']::string AS landing_page,
+      attributes['from_page']::string AS from_page,
       attributes['user_agent']::string AS user_agent,
       attributes['sec_fetch_mode']::string AS sec_fetch_mode,
       attributes['sec_fetch_dest']::string AS sec_fetch_dest,

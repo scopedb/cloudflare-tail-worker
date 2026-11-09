@@ -57,7 +57,7 @@ describe("cloudflare-tail-worker", () => {
         cpuTime: 3.2,
         event: {
           request: {
-            url: "https://www.scopedb.io/docs/guides/sdks/nodejs.md?utm_source=hackernews&utm_medium=social&ref=launch&token=secret-query#section",
+            url: "https://www.scopedb.io/docs/guides/sdks/nodejs.md?utm_source=hackernews&utm_medium=social&ref=launch&landing_page=/blog/scopedb-cloud-public-preview/&from_page=/agent&token=secret-query#section",
             method: "GET",
             headers: {
               "CF-Ray": "8dc1234567890abc-SJC",
@@ -115,7 +115,7 @@ describe("cloudflare-tail-worker", () => {
         cpuTime: 11.4,
         event: {
           request: {
-            url: "https://console.scopedb.cloud/invitations/inv_secret_token_999?workspace=ws_123",
+            url: "https://console.scopedb.cloud/invitations/inv_secret_token_999?workspace=ws_123&landing_page=/invitations/inv_secret_token_999&from_page=https://evil.example/phish",
             method: "POST",
             headers: {
               "cf-ray": "8dc9999999999def-FRA",
@@ -191,6 +191,8 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(siteAttrs["utm_medium"], "social");
     assert.equal(siteAttrs["utm_campaign"], null);
     assert.equal(siteAttrs["ref"], "launch");
+    assert.equal(siteAttrs["landing_page"], "/blog/scopedb-cloud-public-preview");
+    assert.equal(siteAttrs["from_page"], "/agent");
     assert.equal(siteAttrs["colo"], "SJC");
     assert.equal(siteAttrs["continent"], "NA");
     assert.equal(siteAttrs["country"], "US");
@@ -222,6 +224,8 @@ describe("cloudflare-tail-worker", () => {
     const consoleAttrs = consoleInvocation["attributes"] as Record<string, unknown>;
     assert.equal(consoleAttrs["is_prefetch"], true);
     assert.equal(consoleAttrs["is_rsc"], true);
+    assert.equal(consoleAttrs["landing_page"], null);
+    assert.equal(consoleAttrs["from_page"], null);
 
     assert.equal(consoleException["service"], "scopedb-console");
     assert.equal(consoleException["event_type"], "worker.exception");
