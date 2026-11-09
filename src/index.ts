@@ -55,6 +55,7 @@ export interface TailItem {
   readonly eventTimestamp?: number | null;
   readonly wallTime?: number;
   readonly cpuTime?: number;
+  readonly truncated?: boolean;
   readonly event?: TailRequestEvent | null;
   readonly logs?: readonly TailLog[];
   readonly exceptions?: readonly TailException[];
@@ -76,7 +77,16 @@ export interface CloudflareWorkerEventRow extends Record<string, unknown> {
   attributes: Record<string, unknown>;
 }
 
-export interface TailWorkerOptions {
+export interface UrlCaptureOptions {
+  /** Capture only these query keys. By default all keys are captured; [] disables query capture. */
+  readonly allowedQueryParams?: readonly string[];
+  /** Applied to each decoded query value. Return null to omit that value. */
+  readonly redactQueryValue?: (key: string, value: string) => string | null;
+  /** Applied to request and Referer pathnames before token redaction. Return null to omit a path. */
+  readonly redactPath?: (pathname: string, hostname: string) => string | null;
+}
+
+export interface TailWorkerOptions extends UrlCaptureOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly shouldRecord?: (item: TailItem) => boolean;
 }
@@ -91,6 +101,8 @@ const MAX_SANITIZE_DEPTH = 8;
 const MAX_USER_AGENT_LENGTH = 512;
 const MAX_ACCEPT_LENGTH = 256;
 const MAX_MESSAGE_LENGTH = 2048;
+const MAX_STACK_LENGTH = 8192;
+const MAX_PATH_LENGTH = 2048;
 
 export function createTailWorker(options: TailWorkerOptions = {}) {
   return {
@@ -102,7 +114,7 @@ export function createTailWorker(options: TailWorkerOptions = {}) {
       const table = nonEmptyString(env.SCOPEDB_TABLE) ?? DEFAULT_TABLE;
 
       const filtered = options.shouldRecord ? events.filter(options.shouldRecord) : events;
-      const rows = tailItemsToRows(filtered);
+      const rows = tailItemsToRows(filtered, options);
       if (rows.length === 0) {
         return;
       }
@@ -121,27 +133,30 @@ export function createTailWorker(options: TailWorkerOptions = {}) {
         .maxRetries(2)
         .build();
 
-      await stream.sendAll(rows);
-      await stream.shutdown();
+      try {
+        await stream.sendAll(rows);
+      } finally {
+        await stream.shutdown();
+      }
     },
   };
 }
 
 export default createTailWorker();
 
-export function tailItemsToRows(events: readonly TailItem[]): CloudflareWorkerEventRow[] {
-  return events.flatMap(tailItemToRows);
+export function tailItemsToRows(events: readonly TailItem[], options: UrlCaptureOptions = {}): CloudflareWorkerEventRow[] {
+  return events.flatMap((item) => tailItemToRows(item, options));
 }
 
-export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
+export function tailItemToRows(item: TailItem, options: UrlCaptureOptions = {}): CloudflareWorkerEventRow[] {
   const invocationId = crypto.randomUUID();
   const occurredAt = formatTimestamp(item.eventTimestamp);
   const service = nonEmptyString(item.scriptName) ?? "unknown";
   const outcome = nonEmptyString(item.outcome) ?? "unknown";
   const request = item.event?.request;
   const method = nonEmptyString(request?.method);
-  const { host, path, attribution } = extractUrlMetadata(request?.url);
-  const referer = extractUrlMetadata(headerValue(request?.headers, "referer") ?? undefined);
+  const { host, path, query } = extractUrlMetadata(request?.url, options);
+  const referer = extractUrlMetadata(headerValue(request?.headers, "referer") ?? undefined, options, false);
   const status = safeHttpStatus(item.event?.response?.status);
   const rayId = headerValue(request?.headers, "cf-ray");
   const logs = item.logs ?? [];
@@ -167,6 +182,7 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
         cpu_time_ms: finiteNumber(item.cpuTime),
         log_count: logs.length,
         exception_count: exceptions.length,
+        truncated: item.truncated ?? false,
         user_agent: boundedString(headerValue(request?.headers, "user-agent"), MAX_USER_AGENT_LENGTH),
         accept: boundedString(headerValue(request?.headers, "accept"), MAX_ACCEPT_LENGTH),
         sec_fetch_mode: stringField(headerValue(request?.headers, "sec-fetch-mode")),
@@ -176,12 +192,7 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
         trace_id: extractTraceId(headerValue(request?.headers, "traceparent")),
         referer_host: referer.host,
         referer_path: referer.path,
-        utm_source: attribution.utm_source,
-        utm_medium: attribution.utm_medium,
-        utm_campaign: attribution.utm_campaign,
-        ref: attribution.ref,
-        landing_page: attribution.landing_page,
-        from_page: attribution.from_page,
+        query,
         colo: stringField(request?.cf?.["colo"]),
         continent: stringField(request?.cf?.["continent"]),
         country: stringField(request?.cf?.["country"]),
@@ -242,7 +253,7 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
       attributes: {
         invocation_id: invocationId,
         exception_name: exceptionName,
-        stack: typeof exception.stack === "string" ? exception.stack : null,
+        stack: boundedString(exception.stack ?? null, MAX_STACK_LENGTH),
       },
     });
   }
@@ -323,72 +334,69 @@ function formatTimestamp(epochMs: number | null | undefined): string {
   return new Date().toISOString();
 }
 
-interface UrlAttribution {
-  utm_source: string | null;
-  utm_medium: string | null;
-  utm_campaign: string | null;
-  ref: string | null;
-  landing_page: string | null;
-  from_page: string | null;
-}
-
-const EMPTY_ATTRIBUTION: UrlAttribution = {
-  utm_source: null,
-  utm_medium: null,
-  utm_campaign: null,
-  ref: null,
-  landing_page: null,
-  from_page: null,
-};
-
-const SAFE_SITE_PATH = /^\/[a-zA-Z0-9/_.-]{0,127}$/;
-
-// Keep only the URL hostname, pathname, and allowlisted public attribution tags
-// so query-string tokens or credentials are never stored.
-function extractUrlMetadata(rawUrl: string | undefined): {
+function extractUrlMetadata(rawUrl: string | undefined, options: UrlCaptureOptions, captureQuery = true): {
   host: string | null;
   path: string | null;
-  attribution: UrlAttribution;
+  query: Record<string, string[]>;
 } {
-  if (typeof rawUrl !== "string" || rawUrl.length === 0) {
-    return { host: null, path: null, attribution: EMPTY_ATTRIBUTION };
-  }
+  const empty = { host: null, path: null, query: {} };
+  if (!rawUrl) return empty;
+  let parsed: URL;
   try {
-    const parsed = new URL(rawUrl);
-    return {
-      host: parsed.hostname.length > 0 ? parsed.hostname : null,
-      path: parsed.pathname.length > 0 ? sanitizeUrlPath(parsed.pathname) : null,
-      attribution: {
-        utm_source: boundedString(nonEmptyString(parsed.searchParams.get("utm_source")), 128),
-        utm_medium: boundedString(nonEmptyString(parsed.searchParams.get("utm_medium")), 128),
-        utm_campaign: boundedString(nonEmptyString(parsed.searchParams.get("utm_campaign")), 128),
-        ref: boundedString(nonEmptyString(parsed.searchParams.get("ref")), 128),
-        landing_page: sanitizeSitePath(parsed.searchParams.get("landing_page")),
-        from_page: sanitizeSitePath(parsed.searchParams.get("from_page")),
-      },
-    };
+    parsed = new URL(rawUrl);
   } catch {
-    return { host: null, path: null, attribution: EMPTY_ATTRIBUTION };
+    return empty;
   }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return empty;
+
+  const pathname = options.redactPath ? options.redactPath(parsed.pathname, parsed.hostname) : parsed.pathname;
+  const path = pathname === null ? null : boundedString(pathname.split("/").map((segment) => {
+    try {
+      // Inspect decoded data before truncation, including Referer paths that Cloudflare does not redact.
+      const decoded = decodeURIComponent(segment);
+      return redactTokens(decoded) === decoded ? segment : "REDACTED";
+    } catch {
+      return "REDACTED";
+    }
+  }).join("/"), MAX_PATH_LENGTH);
+
+  if (!captureQuery) return { host: parsed.hostname, path, query: {} };
+  const allowed = options.allowedQueryParams === undefined ? null : new Set(options.allowedQueryParams);
+  const query = new Map<string, string[]>();
+  for (const [key, value] of parsed.searchParams) {
+    if (allowed !== null && !allowed.has(key)) continue;
+    const captured = options.redactQueryValue ? options.redactQueryValue(key, value) : value;
+    if (captured === null) continue;
+    const values = query.get(key) ?? [];
+    values.push(captured);
+    query.set(key, values);
+  }
+  return { host: parsed.hostname, path, query: Object.fromEntries(query) };
 }
 
-function sanitizeSitePath(raw: string | null): string | null {
-  if (raw === null) {
-    return null;
-  }
-  const trimmed = raw.trim();
-  if (!SAFE_SITE_PATH.test(trimmed) || trimmed.startsWith("//") || trimmed.includes("..")) {
-    return null;
-  }
-  const normalized = trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
-  if (normalized === "/invitations" || normalized.startsWith("/invitations/")) {
-    return null;
-  }
-  return normalized;
+// Defense in depth only: short secrets and personal data require an application capture policy.
+function redactTokens(value: string): string {
+  return value.replace(/[a-zA-Z0-9+_-]+/g, (token) => {
+    // Prefixes such as tok_ can hide an otherwise recognizable hex identifier.
+    return isSensitiveToken(token)
+      || isSensitiveToken(token.replace(/^[a-zA-Z]+[_-]/, ""))
+      || token.split(/[_-]/).some(isSensitiveToken) ? "REDACTED" : token;
+  });
 }
 
-function sanitizeUrlPath(pathname: string): string {
-  return pathname.replace(/^\/invitations\/[^/]+/, "/invitations/:token");
+function isSensitiveToken(token: string): boolean {
+  const compact = token.replace(/[+_-]/g, "");
+  if (/^[a-fA-F0-9]{32,}$/.test(compact)) return true;
+  if (token.length >= 21 && (token.match(/[A-Z]/g)?.length ?? 0) >= 2
+    && (token.match(/[a-z]/g)?.length ?? 0) >= 2 && (token.match(/[0-9]/g)?.length ?? 0) >= 2) return true;
+  if (!/^\d{13,19}$/.test(compact)) return false;
+  let sum = 0;
+  for (let i = compact.length - 1; i >= 0; i--) {
+    let digit = Number(compact[i]);
+    if ((compact.length - 1 - i) % 2 === 1) digit *= 2;
+    sum += digit > 9 ? digit - 9 : digit;
+  }
+  return sum % 10 === 0;
 }
 
 function isPrefetchRequest(headers: Readonly<Record<string, string>> | undefined): boolean {
@@ -531,7 +539,7 @@ function sanitizeValue(
     return {
       name: value.name,
       message: value.message,
-      ...(typeof value.stack === "string" ? { stack: value.stack } : {}),
+      ...(typeof value.stack === "string" ? { stack: boundedString(value.stack, MAX_STACK_LENGTH) } : {}),
     };
   }
   if (ancestors.has(value)) {
