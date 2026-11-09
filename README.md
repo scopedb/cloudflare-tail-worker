@@ -25,7 +25,7 @@ flowchart LR
 
 - **Zero application code changes**: Producer Workers only add `tail_consumers = [{ service = "scopedb-tail" }]` to `wrangler.toml`.
 - **Zero Node.js compatibility polyfills**: Built on the [`scopedb`](https://github.com/scopedb/scopedb-js) Web Fetch + `CompressionStream` runtime (`< 10 KiB`, no `nodejs_compat` required).
-- **Privacy-first edge web analytics**: Captures Cloudflare edge geography (`continent`, `country`, `region`, `city`, `timezone`, `colo`, `asn`, `as_organization`), referrer (`referer_host`, `referer_path`), and campaign attribution (`utm_source`, `utm_medium`, `utm_campaign`, `ref`) without storing raw client IP addresses or requiring cookies.
+- **Privacy-first edge web analytics**: Captures Cloudflare edge geography (`continent`, `country`, `region`, `city`, `timezone`, `colo`, `asn`, `as_organization`), referrer (`referer_host`, `referer_path`), and campaign and funnel attribution (`utm_source`, `utm_medium`, `utm_campaign`, `ref`, `landing_page`, `from_page`) without storing raw client IP addresses or requiring cookies.
 - **Safe by default**: Sensitive URL query strings, URL fragments, `Referer` query strings, and sensitive headers (`Authorization`, `Cookie`, `Set-Cookie`) are never stored. Arbitrary `console.log` payloads (`BigInt`, `NaN`/`Infinity`, `Error`, `Date`, circular references) are sanitized before serialization.
 - **Cost-efficient on Cloudflare**: Cloudflare Tail Worker invocations do not incur per-request charges and are billed only on Worker CPU milliseconds, bypassing Cloudflare Observability per-GB ingestion and storage meters.
 

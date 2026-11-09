@@ -180,6 +180,8 @@ export function tailItemToRows(item: TailItem): CloudflareWorkerEventRow[] {
         utm_medium: attribution.utm_medium,
         utm_campaign: attribution.utm_campaign,
         ref: attribution.ref,
+        landing_page: attribution.landing_page,
+        from_page: attribution.from_page,
         colo: stringField(request?.cf?.["colo"]),
         continent: stringField(request?.cf?.["continent"]),
         country: stringField(request?.cf?.["country"]),
@@ -326,6 +328,8 @@ interface UrlAttribution {
   utm_medium: string | null;
   utm_campaign: string | null;
   ref: string | null;
+  landing_page: string | null;
+  from_page: string | null;
 }
 
 const EMPTY_ATTRIBUTION: UrlAttribution = {
@@ -333,7 +337,11 @@ const EMPTY_ATTRIBUTION: UrlAttribution = {
   utm_medium: null,
   utm_campaign: null,
   ref: null,
+  landing_page: null,
+  from_page: null,
 };
+
+const SAFE_SITE_PATH = /^\/[a-zA-Z0-9/_.-]{0,127}$/;
 
 // Keep only the URL hostname, pathname, and allowlisted public attribution tags
 // so query-string tokens or credentials are never stored.
@@ -355,11 +363,28 @@ function extractUrlMetadata(rawUrl: string | undefined): {
         utm_medium: boundedString(nonEmptyString(parsed.searchParams.get("utm_medium")), 128),
         utm_campaign: boundedString(nonEmptyString(parsed.searchParams.get("utm_campaign")), 128),
         ref: boundedString(nonEmptyString(parsed.searchParams.get("ref")), 128),
+        landing_page: sanitizeSitePath(parsed.searchParams.get("landing_page")),
+        from_page: sanitizeSitePath(parsed.searchParams.get("from_page")),
       },
     };
   } catch {
     return { host: null, path: null, attribution: EMPTY_ATTRIBUTION };
   }
+}
+
+function sanitizeSitePath(raw: string | null): string | null {
+  if (raw === null) {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!SAFE_SITE_PATH.test(trimmed) || trimmed.startsWith("//") || trimmed.includes("..")) {
+    return null;
+  }
+  const normalized = trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
+  if (normalized === "/invitations" || normalized.startsWith("/invitations/")) {
+    return null;
+  }
+  return normalized;
 }
 
 function sanitizeUrlPath(pathname: string): string {
