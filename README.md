@@ -2,7 +2,7 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/scopedb/cloudflare-tail-worker)
 
-Stream Cloudflare Worker invocations, `console.*` logs, and uncaught exceptions directly into [ScopeDB](https://www.scopedb.io) without modifying your application Workers.
+Stream Cloudflare Worker invocations, `console.*` logs, uncaught exceptions, and first-party application telemetry (browser RUM, distributed trace spans, and custom events) directly into [ScopeDB](https://www.scopedb.io).
 
 ## How it works
 
@@ -23,12 +23,13 @@ flowchart LR
   tail -- "HTTPS (NDJSON + gzip)" --> scopedb
 ```
 
-- **Zero application code changes**: Producer Workers only add `tail_consumers = [{ service = "scopedb-tail" }]` to `wrangler.toml`.
+- **Zero application code changes required**: Producer Workers only add `tail_consumers = [{ service = "scopedb-tail" }]` to `wrangler.toml` to capture HTTP invocations, logs, and exceptions.
+- **First-party RUM and trace spans without producer secrets**: Producer Workers can also emit structured `rum.*`, `trace.span`, and `app.*` events via `console.info(...)`, inheriting trusted Cloudflare edge metadata (`service`, `ray_id`, GeoIP) without binding ScopeDB credentials on producer Workers.
 - **Web-native runtime**: Built on the [`scopedb`](https://github.com/scopedb/scopedb-js) Web Fetch + `CompressionStream` runtime; no `nodejs_compat` required.
-- **Explore fields without changing the table**: Query parameters and structured log arguments remain nested in `attributes`, backed by ScopeDB's semi-structured values. Query a new campaign or application parameter without deploying a new column mapping.
-- **Reusable analysis views**: Start with invocation metrics, error investigation, browser document requests, or AI/content access signals, then adapt the ScopeQL definitions to your application's meaning.
-- **Explicit capture policy**: Captures all query parameters visible to the Tail Worker by default, with optional allowlisting and value redaction. Request and Referer paths receive heuristic token redaction. This is not comprehensive removal of credentials or personal data; see [capture policy](#capture-policy).
-- **Separate execution and storage costs**: Tail Workers require Workers Paid or Enterprise and are billed by CPU time rather than per-request charges. This template disables its own invocation logs while retaining error diagnostics. Any enabled Workers Logs on the producer or consumer are billed separately, as is ScopeDB storage and compute.
+- **Explore fields without changing the table**: Query parameters, structured log arguments, RUM context, and span attributes remain nested in `attributes`, backed by ScopeDB's semi-structured values.
+- **Reusable analysis views**: Start with HTTP invocation metrics, error investigation, browser document requests, AI/content access signals, first-party browser RUM, and distributed trace spans, then adapt the ScopeQL definitions to your application.
+- **Defense-in-depth capture policy**: Redacts sensitive query parameter keys (`code`, `state`, `token`, `session_id`, `api_key`, and similar credentials), embedded URLs/paths in query values, and hex/opaque tokens in request, Referer, and RUM paths by default, with optional query allowlisting and custom redaction hooks; see [capture policy](#capture-policy).
+- **Works on Cloudflare Free and Paid plans with zero Cloudflare Observability storage**: `tail_consumers` operates independently of Cloudflare Workers Logs and Traces storage. Setting `[observability] enabled = false` (or `persist = false` when exporting OpenTelemetry elsewhere) on `scopedb-tail` and producer Workers avoids duplicate Cloudflare Observability ingestion and retention charges.
 
 ## 3-step quickstart
 
@@ -37,20 +38,24 @@ flowchart LR
 Apply the Catalog YAML definitions in [`catalog/`](catalog) using the [ScopeDB CLI](https://www.scopedb.io/docs/guides/scopedb-cli/catalog):
 
 ```bash
-scope catalog apply --table scopedb.public.cloudflare_worker_events -f catalog/table.yaml
-scope catalog apply --view scopedb.public.v_cloudflare_requests -f catalog/v_cloudflare_requests.yaml
-scope catalog apply --view scopedb.public.v_cloudflare_pageviews -f catalog/v_cloudflare_pageviews.yaml
-scope catalog apply --view scopedb.public.v_cloudflare_errors -f catalog/v_cloudflare_errors.yaml
-scope catalog apply --view scopedb.public.v_cloudflare_ai_bots -f catalog/v_cloudflare_ai_bots.yaml
+scope catalog apply --yes --table scopedb.public.cloudflare_worker_events -f catalog/table.yaml
+scope catalog apply --yes --view scopedb.public.v_cloudflare_requests -f catalog/v_cloudflare_requests.yaml
+scope catalog apply --yes --view scopedb.public.v_cloudflare_pageviews -f catalog/v_cloudflare_pageviews.yaml
+scope catalog apply --yes --view scopedb.public.v_cloudflare_errors -f catalog/v_cloudflare_errors.yaml
+scope catalog apply --yes --view scopedb.public.v_cloudflare_ai_bots -f catalog/v_cloudflare_ai_bots.yaml
+scope catalog apply --yes --view scopedb.public.v_cloudflare_rum -f catalog/v_cloudflare_rum.yaml
+scope catalog apply --yes --view scopedb.public.v_cloudflare_traces -f catalog/v_cloudflare_traces.yaml
 ```
 
-| Object                                    | Kind  | Definition                                                                   | Purpose                                                                                                             |
-| ----------------------------------------- | ----- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `scopedb.public.cloudflare_worker_events` | Table | [`catalog/table.yaml`](catalog/table.yaml)                                   | Base event table storing `worker.invocation`, `worker.log`, and `worker.exception` rows clustered by `service`      |
-| `scopedb.public.v_cloudflare_requests`    | View  | [`catalog/v_cloudflare_requests.yaml`](catalog/v_cloudflare_requests.yaml)   | Flattened HTTP/Worker invocation metrics (`wall_time_ms`, `cpu_time_ms`, `colo`, `country`, `user_agent`, `status`) |
-| `scopedb.public.v_cloudflare_pageviews`   | View  | [`catalog/v_cloudflare_pageviews.yaml`](catalog/v_cloudflare_pageviews.yaml) | Successful browser document requests observed by Workers; not complete SPA pageviews                                |
-| `scopedb.public.v_cloudflare_errors`      | View  | [`catalog/v_cloudflare_errors.yaml`](catalog/v_cloudflare_errors.yaml)       | All `5xx` responses, non-`ok` Worker outcomes, `console.error` logs, and uncaught exceptions with stack traces      |
-| `scopedb.public.v_cloudflare_ai_bots`     | View  | [`catalog/v_cloudflare_ai_bots.yaml`](catalog/v_cloudflare_ai_bots.yaml)     | AI identity signals and Markdown/llms.txt requests, exposed as separate flags                                       |
+| Object                                    | Kind  | Definition                                                                   | Purpose                                                                                                                  |
+| ----------------------------------------- | ----- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `scopedb.public.cloudflare_worker_events` | Table | [`catalog/table.yaml`](catalog/table.yaml)                                   | Base event table storing `worker.*`, `rum.*`, `trace.span`, and `app.*` rows clustered by `service` and `occurred_at`    |
+| `scopedb.public.v_cloudflare_requests`    | View  | [`catalog/v_cloudflare_requests.yaml`](catalog/v_cloudflare_requests.yaml)   | Flattened HTTP/Worker invocation metrics (`wall_time_ms`, `cpu_time_ms`, `colo`, `country`, `user_agent`, `status`)      |
+| `scopedb.public.v_cloudflare_pageviews`   | View  | [`catalog/v_cloudflare_pageviews.yaml`](catalog/v_cloudflare_pageviews.yaml) | Successful browser document requests observed by Workers; pair with `v_cloudflare_rum` for full SPA navigation analytics |
+| `scopedb.public.v_cloudflare_errors`      | View  | [`catalog/v_cloudflare_errors.yaml`](catalog/v_cloudflare_errors.yaml)       | Worker `5xx` responses, non-`ok`/non-`canceled` outcomes, application `console.error` logs, and uncaught exceptions      |
+| `scopedb.public.v_cloudflare_ai_bots`     | View  | [`catalog/v_cloudflare_ai_bots.yaml`](catalog/v_cloudflare_ai_bots.yaml)     | AI identity signals and Markdown/`/llms.txt` requests, exposed as separate flags                                         |
+| `scopedb.public.v_cloudflare_rum`         | View  | [`catalog/v_cloudflare_rum.yaml`](catalog/v_cloudflare_rum.yaml)             | First-party browser RUM pageviews, Web Vitals (`LCP`, `INP`, `CLS`), user actions, and client errors                     |
+| `scopedb.public.v_cloudflare_traces`      | View  | [`catalog/v_cloudflare_traces.yaml`](catalog/v_cloudflare_traces.yaml)       | Distributed BFF and Worker trace spans (`trace_id`, `span_id`, `parent_span_id`, `duration_ms`, failure diagnostics)     |
 
 ### 2. Deploy `scopedb-tail` once in your Cloudflare account
 
@@ -75,28 +80,88 @@ pnpm run deploy
 
 ### 3. Attach your producer Workers
 
-Add `tail_consumers` to the `wrangler.toml` of each Worker in your Cloudflare account that you want to observe, then redeploy those Workers:
+Add `tail_consumers` to the `wrangler.toml` of each Worker in your Cloudflare account that you want to observe, disable duplicate Cloudflare Observability persistence if ScopeDB is your sole destination, and redeploy those Workers:
 
 ```toml
 tail_consumers = [{ service = "scopedb-tail" }]
+
+[observability]
+enabled = false
 ```
 
-If a producer Worker defines named environments (such as `[env.staging]` and `[env.production]`), add `tail_consumers = [{ service = "scopedb-tail" }]` under each environment block in `wrangler.toml`.
+If a producer Worker defines named environments (such as `[env.staging]` and `[env.production]`), add `tail_consumers = [{ service = "scopedb-tail" }]` under each environment block in `wrangler.toml`. If you also export OpenTelemetry directly from Cloudflare to an external destination, set `persist = false` under `[observability.logs]` and `[observability.traces]` instead of `enabled = false`.
 
 ## Data and analysis contracts
 
-Each delivered invocation becomes one `worker.invocation` row, plus one row per console log or exception. `attributes['invocation_id']` links them. Count invocation rows for request volume; counting the base table or error view counts events and can count one invocation multiple times. Non-HTTP invocations also produce rows, with HTTP fields set to null. Filter `method IS NOT NULL` when measuring HTTP traffic.
+Each delivered invocation produces one `worker.invocation` row, plus one row per plain console log, uncaught exception, or structured application telemetry event. `attributes['invocation_id']` links all rows emitted during the same Worker execution, and `attributes['truncated']` records whether Cloudflare truncated the upstream trace item on every row type. Count `worker.invocation` rows (or query `v_cloudflare_requests`) for request volume; counting the base table counts all event types. Non-HTTP invocations produce `worker.invocation` rows with HTTP fields set to null; filter `method IS NOT NULL` when measuring HTTP traffic.
 
-The collector stores request facts and selected edge metadata. Application parameters remain in `attributes['query']` as an object of string arrays: `?tag=a&tag=b&empty=` becomes `{"tag":["a","b"],"empty":[""]}`. Values are URL-decoded once, duplicates retain their order, and keys are case-sensitive. Values are not truncated or heuristically redacted by the collector. Cloudflare may already have replaced parts of the incoming URL with `REDACTED`; the collector does not recover or request unredacted values. The UTM/ref columns in the views select the first occurrence from this object, with a fallback to top-level attributes on older records.
+Application query parameters are stored in `attributes['query']` as an object of string arrays: `?tag=a&tag=b&empty=` becomes `{"tag":["a","b"],"empty":[""]}`. Values are URL-decoded, duplicates retain their order, keys are case-sensitive, and sensitive keys or token/path patterns in values are redacted by default (see [capture policy](#capture-policy)). The UTM/ref columns in `v_cloudflare_requests`, `v_cloudflare_pageviews`, and `v_cloudflare_rum` resolve campaign attribution from either top-level `attributes` or `attributes['query']`.
 
-Views define analysis rules rather than additional ingestion schemas:
+Views define analysis rules rather than separate ingestion schemas:
 
-- `v_cloudflare_requests` exposes one row per invocation, including HTTP context, timings, attribution, and Cloudflare's `truncated` flag. Truncated events may contain incomplete logs or exceptions.
-- `v_cloudflare_pageviews` selects successful GET requests with `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`, excluding prefetches, RSC, known bots, and common non-page paths. It measures observable browser document requests. Browsers without these headers, SPA client-side navigation, browser-cache hits, and static assets served without invoking a Worker are outside this count. Full SPA navigation analytics requires a browser navigation event source.
-- `v_cloudflare_ai_bots` exposes `is_verified_ai_bot` (Cloudflare AI categories), `is_ai_user_agent` (a spoofable UA match), and `is_markdown_request` (content access). It includes rows matching any signal. A Markdown request alone is not evidence of an AI visitor, and a verified search crawler or uptime monitor alone does not qualify as AI.
-- `v_cloudflare_errors` exposes error events for investigation. Use invocation IDs to correlate or deduplicate failures.
+- `v_cloudflare_requests` exposes one row per `worker.invocation`, including HTTP context, timings, attribution, `trace_id`, and `truncated`.
+- `v_cloudflare_pageviews` selects successful `GET` `worker.invocation` rows with `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`, excluding prefetches, RSC fetches, known bots, and non-page asset paths. It measures server-observed browser document navigations; use `v_cloudflare_rum` for client-side SPA route transitions and Web Vitals.
+- `v_cloudflare_ai_bots` exposes `is_verified_ai_bot` (Cloudflare AI bot categories), `is_ai_user_agent` (user-agent match), and `is_markdown_request` (`.md`, `/llms.txt`, or `Accept: text/markdown`) across `worker.invocation` rows.
+- `v_cloudflare_errors` focuses on actionable Worker failures across `worker.*` events: uncaught `worker.exception` rows (without duplicating their parent `worker.invocation` row), `worker.invocation` rows with `status >= 500` or non-`ok`/non-`canceled` outcomes (such as `exceededCpu`), and `worker.log` rows at `level = 'error'` excluding routine `status = 404` route misses on `outcome = 'ok'` invocations and non-`error` logs on `5xx` responses.
+- `v_cloudflare_rum` flattens `rum.pageview`, `rum.vital`, `rum.action`, and `rum.error` events emitted through the structured telemetry envelope, combining client RUM context (`session_id`, `view_id`, `trace_id`, `vital_name`, `vital_value`, `action_name`) with trusted edge GeoIP metadata.
+- `v_cloudflare_traces` flattens `trace.span` events for BFF and Worker request tracing (`trace_id`, `span_id`, `parent_span_id`, `span_kind`, `duration_ms`, `http_route`, `error_type`, `failure_stage`, and `request_outcome`).
 
-Tail observes Worker executions, not every request to a domain. Check the producer's [static asset routing](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first) if important URLs bypass the Worker. Running the Worker first on those routes increases execution work. Tail events also arrive after an invocation completes, which matters for long-lived requests.
+Tail observes Worker executions, not every request to a domain. Check the producer's [static asset routing](https://developers.cloudflare.com/workers/static-assets/binding/#run_worker_first) if important URLs bypass the Worker. Assets-only Workers without a `main` entrypoint do not invoke Worker code and emit no Tail events unless wrapped by a Worker script. Tail events also arrive after an invocation completes, which matters for long-lived requests.
+
+## Structured application telemetry (RUM, traces, and app events)
+
+Producer Workers already bound to `scopedb-tail` can emit first-party browser RUM beacons, BFF trace spans, and custom `app.*` events by logging a single `{ __scopedb_telemetry: 1, events: [...] }` object (or JSON string up to 128 KiB) via `console.info(...)`. A valid envelope emits up to 64 structured rows into `cloudflare_worker_events` and suppresses the raw `worker.log` row, while keeping `v_cloudflare_requests`, `v_cloudflare_pageviews`, `v_cloudflare_ai_bots`, and `v_cloudflare_errors` strictly scoped to `worker.*` events:
+
+```ts
+// Inside a producer Worker (for example, POST /api/telemetry or a BFF tracing hook):
+console.info({
+  __scopedb_telemetry: 1,
+  environment: "production",
+  app_version: "2026.11.1",
+  events: [
+    {
+      event_type: "rum.pageview",
+      occurred_at: Date.now(),
+      path: "/docs/guides/analyze-cloudflare-worker-traffic?utm_source=github",
+      referrer: "https://github.com/scopedb/cloudflare-tail-worker",
+      trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+      attributes: {
+        session_id: "c9b1e580-3f8b-4a1a-9d6a-7b4d2e9c1a01",
+        view_id: "7a12c3d4-9e01-4b2c-8f3a-1b2c3d4e5f60",
+      },
+    },
+    {
+      event_type: "rum.vital",
+      path: "/docs/guides/analyze-cloudflare-worker-traffic",
+      attributes: {
+        session_id: "c9b1e580-3f8b-4a1a-9d6a-7b4d2e9c1a01",
+        vital_name: "LCP",
+        vital_value: 842.5,
+        vital_rating: "good",
+      },
+    },
+    {
+      event_type: "trace.span",
+      method: "POST",
+      path: "/api/query",
+      status: 200,
+      trace_id: "4bf92f3577b34da6a3ce929d0e0e4736",
+      span_id: "00f067aa0ba902b7",
+      duration_ms: 34.2,
+      attributes: {
+        span_name: "POST /api/query",
+        span_kind: "SERVER",
+        status_code: "OK",
+        http_route: "/api/query",
+      },
+    },
+  ],
+});
+```
+
+- **Allowed `event_type` namespaces**: `rum.pageview`, `rum.vital`, `rum.action`, `rum.error`, `trace.span`, and `app.<name>` (`/^app\.[a-z0-9][a-z0-9_.-]{0,63}$/`). Collector-reserved `worker.*` types are rejected.
+- **Trusted edge fields**: `service`, `ray_id`, `attributes['invocation_id']`, `attributes['truncated']`, `attributes['script_version_id']`, `attributes['user_agent']`, and Cloudflare `cf` GeoIP fields (`colo`, `continent`, `country`, `region`, `city`, `timezone`, `asn`, `as_organization`) are always stamped from the `TailItem` and cannot be spoofed by client payloads.
+- **Automatic URL sanitization**: `path` and `referrer` on structured events pass through the same collector path, sensitive query-key, and token redaction pipeline as `worker.invocation` URLs, and never inherit `POST /api/telemetry` or HTTP `204` from the beacon transport endpoint. Use anonymous random IDs for `attributes['session_id']`, never authentication cookies or bearer tokens.
 
 ## Example ScopeQL queries
 
@@ -109,7 +174,7 @@ WHERE occurred_at >= NOW() - '24h'::interval
 GROUP BY service
 AGGREGATE
     count() AS requests,
-    sum(if(status >= 500 OR outcome != 'ok', 1, 0)) AS errors,
+    sum(if(status >= 500 OR (outcome != 'ok' AND outcome != 'canceled'), 1, 0)) AS errors,
     avg(wall_time_ms) AS avg_wall_ms,
     max(cpu_time_ms) AS max_cpu_ms
 ORDER BY requests DESC
@@ -138,15 +203,26 @@ ORDER BY fetches DESC
 LIMIT 25
 ```
 
-### Analyze document requests by referrer, campaign, and geography
+### Analyze SPA pageviews and Web Vitals from first-party RUM
 
 ```scopeql
-FROM scopedb.public.v_cloudflare_pageviews
+FROM scopedb.public.v_cloudflare_rum
 WHERE occurred_at >= NOW() - '168h'::interval
-GROUP BY continent, country, referer_host, referer_path, utm_source
-AGGREGATE count() AS document_requests
-ORDER BY document_requests DESC
-LIMIT 25
+  AND event_type = 'rum.vital'
+GROUP BY service, vital_name, vital_rating
+AGGREGATE
+    count() AS samples,
+    avg(vital_value) AS avg_value
+ORDER BY service, vital_name, samples DESC
+```
+
+### Correlate browser RUM actions and BFF spans by `trace_id`
+
+```scopeql
+FROM scopedb.public.cloudflare_worker_events
+WHERE attributes['trace_id']::string = '<trace_id>'
+SELECT occurred_at, service, event_type, level, method, path, status, message, attributes
+ORDER BY occurred_at ASC
 ```
 
 ### Explore an application parameter without changing ingestion
@@ -154,41 +230,37 @@ LIMIT 25
 ```scopeql
 FROM scopedb.public.v_cloudflare_requests
 WHERE occurred_at >= NOW() - '24h'::interval
+  AND query::string != '{}'
 SELECT occurred_at, service, path, query['plan'][0]::string AS plan, query['tag'] AS tags
 ORDER BY occurred_at DESC
 LIMIT 50
 ```
 
-### Correlate all logs and exceptions from a single invocation
-
-```scopeql
-FROM scopedb.public.cloudflare_worker_events
-WHERE attributes['invocation_id']::string = '<invocation_id>'
-SELECT occurred_at, event_type, level, message, attributes
-ORDER BY occurred_at ASC
-```
-
 ## Render web and AI traffic charts with `$scopedb` and `@scopedb/scopeview`
 
-With the [ScopeDB Agent Skill](https://github.com/scopedb/scopedb-skills) (`$scopedb`) and [`@scopedb/scopeview`](https://github.com/scopedb/scopeview), your coding agent can query `v_cloudflare_pageviews` and `v_cloudflare_ai_bots` and export offline interactive HTML charts on demand:
+With [`@scopedb/scopeview`](https://github.com/scopedb/scopeview), your coding agent can query `v_cloudflare_pageviews`, `v_cloudflare_rum`, and `v_cloudflare_ai_bots` and export offline interactive HTML charts on demand:
 
 ```text
-Use $scopedb to analyze our Cloudflare web and AI traffic over the last 168 hours from scopedb.public.v_cloudflare_pageviews and scopedb.public.v_cloudflare_ai_bots, and render @scopedb/scopeview interactive HTML charts for:
-1. Hourly or 5-minute browser document requests over time (line chart)
+Analyze our Cloudflare web and AI traffic over the last 168 hours from scopedb.public.v_cloudflare_pageviews and scopedb.public.v_cloudflare_ai_bots, and render @scopedb/scopeview interactive HTML charts for:
+1. Hourly browser document requests over time using floor(occurred_at, n => 1, unit => 'hour') (line chart)
 2. Top 15 document paths (top-list chart)
 3. Top external referrers and UTM sources (top-list chart)
 4. Top visitor countries and cities (top-list chart)
 5. Markdown/llms.txt fetches, split by verified AI, AI user-agent, and content-only signals (top-list chart)
-Label counts as observed requests, not unique visitors or complete SPA pageviews.
+Label counts from v_cloudflare_pageviews as server-observed document requests, not unique visitors.
 ```
 
 ## Capture policy
 
-Full query capture can retain credentials, email addresses, search terms, and other personal or application data. Cloudflare's [TailRequest redaction](https://developers.cloudflare.com/workers/runtime-apis/handlers/tail/#tailrequest) is heuristic and can miss prefixed tokens, short codes, or encoded values. Retention and access controls must match the data you choose to capture.
+Query parameters and paths can carry credentials, email addresses, search terms, and other personal or application data. Cloudflare's upstream [TailRequest redaction](https://developers.cloudflare.com/workers/runtime-apis/handlers/tail/#tailrequest) is heuristic and can miss short codes, prefixed tokens, or URL-encoded redirect paths. Retention and access controls must match the data you choose to capture.
 
-The collector omits URL fragments, Referer query strings, raw client-IP fields, and sensitive request headers. It redacts recognizable hex/base64-like tokens and payment-card patterns in decoded request and Referer path segments, including prefixed hex tokens. Paths are limited to 2,048 characters and exception stacks to 8,192. Short secrets and personal data in paths need an application rule. Console arguments and exception messages are normalized for serialization, not scrubbed for secrets or personal data.
+By default, the collector omits URL fragments, Referer query strings, raw client-IP fields, and sensitive request headers (`Authorization`, `Cookie`, `CF-Connecting-IP`). Across request URLs, Referer headers, and structured telemetry `path`/`referrer` fields, the collector applies defense-in-depth redaction:
 
-Configure the exported `createTailWorker` in [src/index.ts](src/index.ts), or import it from a separate entrypoint and set Wrangler's `main` to that file. `allowedQueryParams` optionally restricts keys; `[]` disables query capture. `redactQueryValue` receives each decoded value and can return null to omit it. `redactPath` applies to both request and Referer pathnames and can return null to omit the path. For example, a deployment that only needs campaign/plan attribution and has short reset tokens can use:
+- **Sensitive query keys**: Case-insensitive keys `code`, `state`, `token`, `access_token`, `refresh_token`, `id_token`, `api_key`, `apikey`, `key`, `secret`, `client_secret`, `password`, `passwd`, `signature`, `sig`, `x-amz-signature`, `x-amz-security-token`, `authorization`, `auth`, `session`, `session_id`, `cookie`, `otp`, `invite`, and `invitation` have their values replaced with `"REDACTED"`.
+- **Query values and embedded paths/URLs**: Decoded query values are scanned for tokens and nested paths or URLs (for example, `?returnTo=%2Finvitations%2F<token>` becomes `/invitations/REDACTED`), while non-secret application parameters and duplicate values retain their decoded values and order.
+- **Path and token heuristics**: Decoded path segments and query values redact `>=12`-character hex identifiers (such as `/workspaces/777257d6587f`), `>=20`-character opaque alphanumeric or non-word single-case tokens (such as `/invitations/aaaaaaaaaaaaaaaaaaaaaaaa`), `>=21`-character mixed-case+digit tokens, prefixed tokens (`tok_...`), and 13–19 digit Luhn card numbers, while preserving normal English kebab-case, snake_case, and camelCase route slugs.
+
+Paths and messages are bounded to 2,048 characters and exception stacks to 8,192 characters. Short application-specific identifiers (such as usernames or emails) and arbitrary `console.*` arguments or exception messages are not scrubbed for personal data; configure `createTailWorker` in [src/index.ts](src/index.ts) when stricter allowlisting or custom redaction is required:
 
 ```ts
 import { createTailWorker } from "./src/index.js";
@@ -196,13 +268,13 @@ import { createTailWorker } from "./src/index.js";
 export default createTailWorker({
   allowedQueryParams: ["utm_source", "utm_medium", "utm_campaign", "plan"],
   redactQueryValue: (key, value) => key === "plan" && !["free", "team"].includes(value) ? null : value,
-  redactPath: (pathname) => pathname.replace(/^\/reset\/[^/]+/, "/reset/:token"),
+  redactPath: (pathname) => pathname.replace(/^\/users\/[^/]+/, "/users/:handle"),
 });
 ```
 
 ## Filtering and delivery
 
-The default collector does not sample. `shouldRecord` filters entire invocations, including their logs and exceptions. For example, omit successful health checks while retaining error logs even when the HTTP response was successful:
+The default collector does not sample. `shouldRecord` filters entire invocations, including their logs, structured events, and exceptions. For example, omit successful health checks while retaining error logs even when the HTTP response was successful:
 
 ```ts
 import { createTailWorker } from "./src/index.js";
@@ -222,17 +294,13 @@ export default createTailWorker({
 
 Random filtering changes counts and can bias error rates. The supplied views do not compensate for sampling; do not interpret sampled counts as totals without recording selection probabilities and adapting the analysis.
 
-Each Tail invocation sends its own batch to ScopeDB and waits for delivery. This is not a persistent queue or cross-invocation batcher. The SDK retries eligible failures up to twice, with a 10-second attempt timeout and a 25-second elapsed budget per batch. Network failures and timeouts can leave the commit outcome unknown; the collector reports failure without automatically replaying an ambiguous write. There is no durable replay buffer. Monitor consumer failures and compare received volume with producer metrics. Applications needing durable delivery should introduce a persistent queue and an explicit replay/deduplication policy.
+Each Tail invocation sends its own batch to ScopeDB and waits for delivery. This is not a persistent queue or cross-invocation batcher. The SDK retries eligible failures up to twice, with a 10-second attempt timeout and a 25-second elapsed budget per batch. Network failures and timeouts can leave the commit outcome unknown; the collector reports failure without automatically replaying an ambiguous write. Monitor consumer failures and compare received volume with producer metrics. Applications needing durable delivery across extended outages can buffer events in a persistent queue with an explicit deduplication policy.
 
-The Tail Worker's automatic invocation logs are disabled in [wrangler.toml](wrangler.toml); error diagnostics remain enabled. This does not change producer Workers Logs settings or make enabled log storage free.
+Cloudflare Observability is disabled (`[observability] enabled = false`) in [wrangler.toml](wrangler.toml) so `scopedb-tail` incurs zero Cloudflare Workers Logs or Traces persistence charges.
 
 ## Upgrading an existing deployment
 
-Worker code and database views are separate deployment artifacts. The GitHub workflow deploys Worker code on `main`; it does not apply Catalog YAML. Before merging a collector change that alters attributes, apply the matching views to the destination database using the commands in step 1. Apply all four views for this update, then deploy the Worker. If you customized the database, schema, or table bindings, update the table references in the view YAML as well.
-
-These views read UTM/ref from both older top-level attributes and the new array-valued query object, so they can be applied before the collector changes. `landing_page` and `from_page` are no longer dedicated columns: use `query['landing_page'][0]::string` and `query['from_page'][0]::string` for new data. Older values remain in the base table's top-level attributes; there is no query backfill. For analysis spanning the transition, use `if(attributes['query'] IS NULL, attributes['landing_page']::string, attributes['query']['landing_page'][0]::string)` against the base table. Keep the compatible views if rolling back only the collector.
-
-After rollout, verify a known document request, a repeated query parameter, and an error invocation in ScopeDB. Check the new AI/content flags and compare document-request counts before and after the stricter navigation filter; that filter intentionally changes the metric. Do not interpret this view update as a traffic change.
+Worker code and database views are separate deployment artifacts. The GitHub workflow deploys Worker code on `main`; it does not apply Catalog YAML. Apply the table and all six views in [`catalog/`](catalog) using the commands in step 1 before or alongside deploying updated Worker code. If you customized the database, schema, or table bindings, update the `scopedb.public.` references in the view YAML files as well.
 
 ## Development
 
@@ -241,13 +309,13 @@ pnpm install
 pnpm run ci
 ```
 
-The default CI checks conversion, SDK transport, types, and Worker bundling. To execute all four Catalog definitions against a local ScopeDB server with configured PostgreSQL and object storage:
+The default CI checks row conversion, redaction, structured telemetry parsing, SDK transport, types, and Worker bundling. To execute all six Catalog view definitions against a local ScopeDB server with configured PostgreSQL and object storage:
 
 ```bash
 SCOPEDB_TEST_ENDPOINT=http://127.0.0.1:6543 pnpm run test:catalog
 ```
 
-This integration test creates a uniquely named temporary database, ingests current and historical event fixtures, verifies the view results, and deletes the database afterward. It covers duplicate query values, UTM compatibility, navigation filtering, AI/content classification, and successful responses containing error logs.
+This integration test creates a uniquely named temporary database, ingests current, historical, and structured telemetry fixtures, verifies all six views (`v_cloudflare_requests`, `v_cloudflare_pageviews`, `v_cloudflare_errors`, `v_cloudflare_ai_bots`, `v_cloudflare_rum`, and `v_cloudflare_traces`), and deletes the temporary database afterward.
 
 ## License
 

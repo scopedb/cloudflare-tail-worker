@@ -1,0 +1,53 @@
+# Copyright 2026 ScopeDB, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: v_cloudflare_traces
+comment: Distributed BFF and Worker trace spans emitted via structured Tail Worker telemetry
+statement: |
+  FROM scopedb.public.cloudflare_worker_events
+  WHERE event_type = 'trace.span'
+  SELECT
+      occurred_at,
+      service,
+      outcome,
+      level,
+      method,
+      host,
+      path,
+      status,
+      ray_id,
+      message,
+      attributes['trace_id']::string AS trace_id,
+      attributes['span_id']::string AS span_id,
+      attributes['parent_span_id']::string AS parent_span_id,
+      if(attributes['span_name'] IS NOT NULL, attributes['span_name']::string, message) AS span_name,
+      attributes['span_kind']::string AS span_kind,
+      attributes['status_code']::string AS status_code,
+      attributes['duration_ms']::float AS duration_ms,
+      if(attributes['http_route'] IS NOT NULL, attributes['http_route']::string, attributes['http.route']::string) AS http_route,
+      if(attributes['error_type'] IS NOT NULL, attributes['error_type']::string, attributes['error.type']::string) AS error_type,
+      if(attributes['failure_stage'] IS NOT NULL, attributes['failure_stage']::string, attributes['scopedb.failure.stage']::string) AS failure_stage,
+      if(attributes['request_outcome'] IS NOT NULL, attributes['request_outcome']::string, attributes['scopedb.request.outcome']::string) AS request_outcome,
+      if(attributes['dropped_spans'] IS NOT NULL, attributes['dropped_spans']::int, attributes['scopedb.telemetry.dropped_spans']::int) AS dropped_spans,
+      attributes['environment']::string AS environment,
+      if(
+          attributes['service_version'] IS NOT NULL,
+          attributes['service_version']::string,
+          if(attributes['service.version'] IS NOT NULL, attributes['service.version']::string, attributes['script_version_id']::string)
+      ) AS service_version,
+      attributes['invocation_id']::string AS invocation_id,
+      attributes['colo']::string AS colo,
+      attributes['country']::string AS country,
+      attributes['truncated']::boolean AS truncated,
+      attributes

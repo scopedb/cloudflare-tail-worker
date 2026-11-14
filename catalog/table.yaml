@@ -13,7 +13,7 @@
 # limitations under the License.
 
 name: cloudflare_worker_events
-comment: Cloudflare Worker invocations, console logs, and uncaught exceptions
+comment: Cloudflare Worker invocations, console logs, uncaught exceptions, and structured application telemetry
 columns:
   - name: event_id
     data_type: string
@@ -26,7 +26,7 @@ columns:
     comment: Producer Worker name (scriptName)
   - name: event_type
     data_type: string
-    comment: worker.invocation, worker.log, or worker.exception
+    comment: worker.invocation, worker.log, worker.exception, rum.*, trace.span, or app.*
   - name: outcome
     data_type: string
     comment: Worker execution outcome (ok, exception, exceededCpu, etc.)
