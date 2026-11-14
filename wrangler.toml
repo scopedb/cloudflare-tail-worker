@@ -19,9 +19,8 @@ main = "src/index.ts"
 compatibility_date = "2025-11-19"
 workers_dev = false
 
-[observability.logs]
-enabled = true
-invocation_logs = false
+[observability]
+enabled = false
 
 [vars]
 SCOPEDB_DATABASE = "scopedb"
