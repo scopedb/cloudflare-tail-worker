@@ -37,9 +37,12 @@ it("executes catalog views against current and historical event rows", { timeout
   await client.catalog().database(database).apply({ name: database, schemas: [{ name: "public", tables: [table], views }] });
   try {
     const navigation = { "user-agent": "Mozilla/5.0", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
-    function request(service: string, path: string, headers: Record<string, string> = navigation, cf = {}): TailItem {
-      return { scriptName: service, outcome: "ok", eventTimestamp: 1730620800000,
-        event: { request: { url: "https://example.com" + path, method: "GET", headers, cf }, response: { status: 200 } },
+    function request(service: string, path: string, headers: Record<string, string> = navigation, cf = {}, status = 200): TailItem {
+      return {
+        scriptName: service,
+        outcome: "ok",
+        eventTimestamp: 1730620800000,
+        event: { request: { url: "https://example.com" + path, method: "GET", headers, cf }, response: { status } },
       };
     }
     const rows = [
@@ -54,6 +57,14 @@ it("executes catalog views against current and historical event rows", { timeout
       request("claimed-ai", "/docs", { ...navigation, "user-agent": "ChatGPT-User/1.0" }),
       request("markdown", "/docs.md"),
       { scriptName: "scheduled", outcome: "ok" },
+      { scriptName: "client-canceled", outcome: "canceled" },
+      { ...request("not-found-probe", "/.env", {}, {}, 404), logs: [{ level: "error", message: ["[404] GET /.env"] }] },
+      { ...request("gateway-502", "/api/query", {}, {}, 502), logs: [{ level: "warn", message: ["cancel timeout"] }] },
+      {
+        scriptName: "uncaught-exc",
+        outcome: "exception",
+        exceptions: [{ name: "TypeError", message: "boom" }],
+      },
       { ...request("logged-error", "/health", {}), logs: [{ level: "error", message: ["upstream failed"] }] },
     ].flatMap((item) => tailItemToRows(item));
     const [legacy] = tailItemToRows(request("legacy", "/docs"));
@@ -79,8 +90,10 @@ it("executes catalog views against current and historical event rows", { timeout
       { service: "markdown", is_verified_ai_bot: false, is_ai_user_agent: false, is_markdown_request: true },
       { service: "verified-ai", is_verified_ai_bot: true, is_ai_user_agent: false, is_markdown_request: false },
     ]);
-    assert.deepEqual(await query("FROM " + source + "v_cloudflare_errors SELECT service, event_type"), [
+    assert.deepEqual(await query("FROM " + source + "v_cloudflare_errors SELECT service, event_type ORDER BY service"), [
+      { service: "gateway-502", event_type: "worker.invocation" },
       { service: "logged-error", event_type: "worker.log" },
+      { service: "uncaught-exc", event_type: "worker.exception" },
     ]);
   } finally {
     await client.catalog().database(database).delete({ allowDestructive: true });

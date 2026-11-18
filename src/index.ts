@@ -78,7 +78,7 @@ export interface CloudflareWorkerEventRow extends Record<string, unknown> {
 }
 
 export interface UrlCaptureOptions {
-  /** Capture only these query keys. By default all keys are captured; [] disables query capture. */
+  /** Capture only these query keys. By default all keys are captured (with recognizable high-entropy tokens in values redacted); [] disables query capture. */
   readonly allowedQueryParams?: readonly string[];
   /** Applied to each decoded query value. Return null to omit that value. */
   readonly redactQueryValue?: (key: string, value: string) => string | null;
@@ -159,6 +159,7 @@ export function tailItemToRows(item: TailItem, options: UrlCaptureOptions = {}):
   const referer = extractUrlMetadata(headerValue(request?.headers, "referer") ?? undefined, options, false);
   const status = safeHttpStatus(item.event?.response?.status);
   const rayId = headerValue(request?.headers, "cf-ray");
+  const truncated = Boolean(item.truncated);
   const logs = item.logs ?? [];
   const exceptions = item.exceptions ?? [];
 
@@ -182,7 +183,7 @@ export function tailItemToRows(item: TailItem, options: UrlCaptureOptions = {}):
         cpu_time_ms: finiteNumber(item.cpuTime),
         log_count: logs.length,
         exception_count: exceptions.length,
-        truncated: item.truncated ?? false,
+        truncated,
         user_agent: boundedString(headerValue(request?.headers, "user-agent"), MAX_USER_AGENT_LENGTH),
         accept: boundedString(headerValue(request?.headers, "accept"), MAX_ACCEPT_LENGTH),
         sec_fetch_mode: stringField(headerValue(request?.headers, "sec-fetch-mode")),
@@ -226,6 +227,7 @@ export function tailItemToRows(item: TailItem, options: UrlCaptureOptions = {}):
       attributes: {
         invocation_id: invocationId,
         raw_level: log.level,
+        truncated,
         arguments: sanitizedArgs,
       },
     });
@@ -254,6 +256,7 @@ export function tailItemToRows(item: TailItem, options: UrlCaptureOptions = {}):
         invocation_id: invocationId,
         exception_name: exceptionName,
         stack: boundedString(exception.stack ?? null, MAX_STACK_LENGTH),
+        truncated,
       },
     });
   }
@@ -266,7 +269,7 @@ function invocationLevel(
   status: number | null,
   exceptionCount: number,
 ): "info" | "warn" | "error" {
-  if (outcome !== "ok" || exceptionCount > 0 || (status !== null && status >= 500)) {
+  if ((outcome !== "ok" && outcome !== "canceled") || exceptionCount > 0 || (status !== null && status >= 500)) {
     return "error";
   }
   if (status !== null && status >= 400) {
@@ -365,7 +368,7 @@ function extractUrlMetadata(rawUrl: string | undefined, options: UrlCaptureOptio
   const query = new Map<string, string[]>();
   for (const [key, value] of parsed.searchParams) {
     if (allowed !== null && !allowed.has(key)) continue;
-    const captured = options.redactQueryValue ? options.redactQueryValue(key, value) : value;
+    const captured = options.redactQueryValue ? options.redactQueryValue(key, value) : redactTokens(value);
     if (captured === null) continue;
     const values = query.get(key) ?? [];
     values.push(captured);

@@ -276,20 +276,45 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(rows[0]?.message, "invocation (ok)");
   });
 
-  it("preserves decoded query values and duplicates without silently clipping user data", () => {
+  it("treats client-canceled outcomes as info rather than error", () => {
+    const [canceled] = tailItemToRows({
+      scriptName: "scopedb-site",
+      outcome: "canceled",
+      event: { request: { url: "https://www.scopedb.io/docs/guides", method: "GET" } },
+    });
+    assert.equal(canceled!.outcome, "canceled");
+    assert.equal(canceled!.level, "info");
+
+    const [exceeded] = tailItemToRows({
+      scriptName: "scopedb-site",
+      outcome: "exceededCpu",
+      event: { request: { url: "https://www.scopedb.io/docs/guides", method: "GET" } },
+    });
+    assert.equal(exceeded!.level, "error");
+  });
+
+  it("preserves decoded query values and duplicates while redacting high-entropy tokens in values", () => {
     const params = new URLSearchParams();
     for (let i = 0; i < 40; i++) params.append("tag", `value-${i}`);
     params.append("utm_source", "first");
     params.append("utm_source", "last");
     params.append("payload", "x".repeat(4096));
     params.append("email", "alice@example.com");
+    params.append("state", "open");
+    params.append("key", "theme");
+    params.append("session_id", "opaque-value");
+    params.append("percentText", "100% ready");
     params.append("token", "tok_" + "ab12".repeat(16));
+    params.append("returnTo", "/invitations/tok_" + "ab12".repeat(16));
     params.append("__proto__", "ordinary query key");
     params.append("empty", "");
     const [row] = tailItemToRows({ outcome: "ok", event: { request: { url: `https://example.com/?${params}` } } });
-    assert.deepEqual(row!.attributes["query"], Object.fromEntries(
+    const expected = Object.fromEntries(
       [...new Set(params.keys())].map((key) => [key, params.getAll(key)]),
-    ));
+    );
+    expected["token"] = ["REDACTED"];
+    expected["returnTo"] = ["/invitations/REDACTED"];
+    assert.deepEqual(row!.attributes["query"], expected);
   });
 
   it("redacts encoded and prefixed path credentials in requests and Referer headers", () => {
@@ -341,11 +366,16 @@ describe("cloudflare-tail-worker", () => {
     assert.deepEqual(omitted!.attributes["query"], {});
   });
 
-  it("bounds exception stacks and preserves upstream truncation signals", () => {
-    const [invocation, exception] = tailItemToRows({ outcome: "exception", truncated: true,
+  it("bounds exception stacks and propagates upstream truncation signals across invocations, logs, and exceptions", () => {
+    const [invocation, logRow, exception] = tailItemToRows({
+      outcome: "exception",
+      truncated: true,
+      logs: [{ level: "error", message: ["partial log"] }],
       exceptions: [{ name: "Error", message: "failed", stack: "x".repeat(10000) }],
     });
     assert.equal(invocation!.attributes["truncated"], true);
+    assert.equal(logRow!.attributes["truncated"], true);
+    assert.equal(exception!.attributes["truncated"], true);
     assert.equal((exception!.attributes["stack"] as string).length, 8192);
   });
 
