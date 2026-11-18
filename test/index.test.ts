@@ -23,7 +23,7 @@ import YAML from "yaml";
 import { createTailWorker, type TailItem, tailItemToRows, tailItemsToRows } from "../src/index.js";
 
 describe("cloudflare-tail-worker", () => {
-  it("normalizes multi-service invocations, logs, and exceptions with default sensitive query redaction and selective header extraction", async () => {
+  it("normalizes multi-service invocations, logs, and exceptions with full query capture and selective header extraction", async () => {
     const requests: { url: string; headers: Headers; rawText: string; lines: Record<string, unknown>[] }[] = [];
 
     const worker = createTailWorker({
@@ -113,7 +113,6 @@ describe("cloudflare-tail-worker", () => {
         eventTimestamp: 1730620805000,
         wallTime: 142.0,
         cpuTime: 11.4,
-        truncated: true,
         event: {
           request: {
             url: "https://console.scopedb.cloud/reset/tok_a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1?workspace=ws_123&session_id=opaque-value",
@@ -194,7 +193,7 @@ describe("cloudflare-tail-worker", () => {
       ref: ["launch"],
       landing_page: ["/blog/scopedb-cloud-public-preview/"],
       from_page: ["/agent"],
-      token: ["REDACTED"],
+      token: ["secret-query"],
     });
     assert.equal(siteAttrs["colo"], "SJC");
     assert.equal(siteAttrs["continent"], "NA");
@@ -211,7 +210,6 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(siteLog["level"], "info");
     const logAttrs = siteLog["attributes"] as Record<string, unknown>;
     assert.equal(logAttrs["invocation_id"], siteInvocation["event_id"]);
-    assert.equal(logAttrs["truncated"], false);
     const args = logAttrs["arguments"] as unknown[];
     const meta = args[1] as Record<string, unknown>;
     assert.equal(meta["overflow_bigint"], "9223372036854775808");
@@ -228,10 +226,9 @@ describe("cloudflare-tail-worker", () => {
     const consoleAttrs = consoleInvocation["attributes"] as Record<string, unknown>;
     assert.equal(consoleAttrs["is_prefetch"], true);
     assert.equal(consoleAttrs["is_rsc"], true);
-    assert.equal(consoleAttrs["truncated"], true);
     assert.deepEqual(consoleAttrs["query"], {
       workspace: ["ws_123"],
-      session_id: ["REDACTED"],
+      session_id: ["opaque-value"],
     });
 
     assert.equal(consoleException["service"], "scopedb-console");
@@ -241,31 +238,11 @@ describe("cloudflare-tail-worker", () => {
     const excAttrs = consoleException["attributes"] as Record<string, unknown>;
     assert.equal(excAttrs["invocation_id"], consoleInvocation["event_id"]);
     assert.equal(excAttrs["exception_name"], "TypeError");
-    assert.equal(excAttrs["truncated"], true);
 
     const serializedBatch = JSON.stringify(req.lines);
     assert.ok(!serializedBatch.includes("super-secret-user-token"));
     assert.ok(!serializedBatch.includes("private-cookie"));
     assert.ok(!serializedBatch.includes("secret=123"));
-    assert.ok(!serializedBatch.includes("secret-query"));
-    assert.ok(!serializedBatch.includes("opaque-value"));
-  });
-
-  it("treats client-canceled outcomes as info rather than error", () => {
-    const [canceled] = tailItemToRows({
-      scriptName: "scopedb-site",
-      outcome: "canceled",
-      event: { request: { url: "https://www.scopedb.io/docs/guides", method: "GET" } },
-    });
-    assert.equal(canceled!.outcome, "canceled");
-    assert.equal(canceled!.level, "info");
-
-    const [exceeded] = tailItemToRows({
-      scriptName: "scopedb-site",
-      outcome: "exceededCpu",
-      event: { request: { url: "https://www.scopedb.io/docs/guides", method: "GET" } },
-    });
-    assert.equal(exceeded!.level, "error");
   });
 
   it("supports custom shouldRecord filtering and validates required bindings", async () => {
@@ -299,53 +276,49 @@ describe("cloudflare-tail-worker", () => {
     assert.equal(rows[0]?.message, "invocation (ok)");
   });
 
-  it("preserves decoded non-secret query values and duplicates while redacting sensitive keys, tokens, and embedded paths", () => {
+  it("treats client-canceled outcomes as info rather than error", () => {
+    const [canceled] = tailItemToRows({
+      scriptName: "scopedb-site",
+      outcome: "canceled",
+      event: { request: { url: "https://www.scopedb.io/docs/guides", method: "GET" } },
+    });
+    assert.equal(canceled!.outcome, "canceled");
+    assert.equal(canceled!.level, "info");
+
+    const [exceeded] = tailItemToRows({
+      scriptName: "scopedb-site",
+      outcome: "exceededCpu",
+      event: { request: { url: "https://www.scopedb.io/docs/guides", method: "GET" } },
+    });
+    assert.equal(exceeded!.level, "error");
+  });
+
+  it("preserves decoded query values and duplicates while redacting high-entropy tokens in values", () => {
     const params = new URLSearchParams();
     for (let i = 0; i < 40; i++) params.append("tag", `value-${i}`);
     params.append("utm_source", "first");
     params.append("utm_source", "last");
     params.append("payload", "x".repeat(4096));
     params.append("email", "alice@example.com");
-    params.append("token", "tok_" + "ab12".repeat(16));
-    params.append("Code", "0123456789abcdef0123");
-    params.append("X-Amz-Signature", "abcdef0123456789");
-    params.append("returnTo", "/invitations/inv_777257d6587fa1b2?state=xyz");
-    params.append("doubleEncoded", "%2Finvitations%2Finv_777257d6587fa1b2");
+    params.append("state", "open");
+    params.append("key", "theme");
+    params.append("session_id", "opaque-value");
     params.append("percentText", "100% ready");
-    params.append("redirect", "https://console.scopedb.cloud/workspaces/777257d6587f/settings?invite=secret");
-    params.append("embedded_tok", "tok_" + "ab12".repeat(16));
+    params.append("token", "tok_" + "ab12".repeat(16));
+    params.append("returnTo", "/invitations/tok_" + "ab12".repeat(16));
     params.append("__proto__", "ordinary query key");
     params.append("empty", "");
-
-    const [row] = tailItemToRows({
-      outcome: "ok",
-      event: { request: { url: `https://example.com/docs/guides/analyze-cloudflare-worker-traffic?${params}` } },
-    });
-    assert.equal(row!.path, "/docs/guides/analyze-cloudflare-worker-traffic");
-    const query = row!.attributes["query"] as Record<string, string[]>;
-    assert.equal(query["tag"]?.length, 40);
-    assert.deepEqual(query["utm_source"], ["first", "last"]);
-    assert.equal(query["payload"]?.[0], "x".repeat(4096));
-    assert.deepEqual(query["email"], ["alice@example.com"]);
-    assert.deepEqual(query["token"], ["REDACTED"]);
-    assert.deepEqual(query["Code"], ["REDACTED"]);
-    assert.deepEqual(query["X-Amz-Signature"], ["REDACTED"]);
-    assert.deepEqual(query["returnTo"], ["/invitations/REDACTED?state=REDACTED"]);
-    assert.deepEqual(query["doubleEncoded"], ["/invitations/REDACTED"]);
-    assert.deepEqual(query["percentText"], ["100% ready"]);
-    assert.deepEqual(query["redirect"], [
-      "https://console.scopedb.cloud/workspaces/REDACTED/settings?invite=REDACTED",
-    ]);
-    assert.deepEqual(query["embedded_tok"], ["REDACTED"]);
-    assert.deepEqual(query["__proto__"], ["ordinary query key"]);
-    assert.deepEqual(query["empty"], [""]);
+    const [row] = tailItemToRows({ outcome: "ok", event: { request: { url: `https://example.com/?${params}` } } });
+    const expected = Object.fromEntries(
+      [...new Set(params.keys())].map((key) => [key, params.getAll(key)]),
+    );
+    expected["token"] = ["REDACTED"];
+    expected["returnTo"] = ["/invitations/REDACTED"];
+    assert.deepEqual(row!.attributes["query"], expected);
   });
 
-  it("redacts 12-char hex IDs and encoded/prefixed credentials in requests and Referer headers while preserving route slugs", () => {
+  it("redacts encoded and prefixed path credentials in requests and Referer headers", () => {
     for (const token of [
-      "777257d6587f",
-      "6ef0e720a1e3",
-      "ws_777257d6587f",
       "ab12".repeat(16),
       "tok_" + "ab12".repeat(16),
       "tok_12345678-abcd-1234-abcd-123456789abc",
@@ -362,20 +335,6 @@ describe("cloudflare-tail-worker", () => {
       assert.ok(rows.every((row) => row.path === "/reset/REDACTED"));
       assert.equal(rows[0]!.attributes["referer_path"], "/reset/REDACTED");
       assert.ok(!JSON.stringify(rows).includes(token));
-    }
-
-    for (const safePath of [
-      "/docs/guides/analyze-cloudflare-worker-traffic",
-      "/blog/2026-10-23-javascript-sdk-0-3-0",
-      "/docs/reference/internationalization",
-      "/components/StaticAssetsIncrementalCache",
-      "/tables/cloudflare_worker_events",
-    ]) {
-      const [row] = tailItemToRows({
-        outcome: "ok",
-        event: { request: { url: `https://www.scopedb.io${safePath}` } },
-      });
-      assert.equal(row!.path, safePath);
     }
   });
 

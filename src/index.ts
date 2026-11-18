@@ -78,7 +78,7 @@ export interface CloudflareWorkerEventRow extends Record<string, unknown> {
 }
 
 export interface UrlCaptureOptions {
-  /** Capture only these query keys. By default all keys are captured (with sensitive keys and tokens redacted); [] disables query capture. */
+  /** Capture only these query keys. By default all keys are captured (with recognizable high-entropy tokens in values redacted); [] disables query capture. */
   readonly allowedQueryParams?: readonly string[];
   /** Applied to each decoded query value. Return null to omit that value. */
   readonly redactQueryValue?: (key: string, value: string) => string | null;
@@ -103,34 +103,6 @@ const MAX_ACCEPT_LENGTH = 256;
 const MAX_MESSAGE_LENGTH = 2048;
 const MAX_STACK_LENGTH = 8192;
 const MAX_PATH_LENGTH = 2048;
-
-const DEFAULT_SENSITIVE_QUERY_KEYS = new Set([
-  "code",
-  "state",
-  "token",
-  "access_token",
-  "refresh_token",
-  "id_token",
-  "api_key",
-  "apikey",
-  "key",
-  "secret",
-  "client_secret",
-  "password",
-  "passwd",
-  "signature",
-  "sig",
-  "x-amz-signature",
-  "x-amz-security-token",
-  "authorization",
-  "auth",
-  "session",
-  "session_id",
-  "cookie",
-  "otp",
-  "invite",
-  "invitation",
-]);
 
 export function createTailWorker(options: TailWorkerOptions = {}) {
   return {
@@ -297,11 +269,7 @@ function invocationLevel(
   status: number | null,
   exceptionCount: number,
 ): "info" | "warn" | "error" {
-  if (
-    exceptionCount > 0 ||
-    (status !== null && status >= 500) ||
-    (outcome !== "ok" && outcome !== "canceled")
-  ) {
+  if ((outcome !== "ok" && outcome !== "canceled") || exceptionCount > 0 || (status !== null && status >= 500)) {
     return "error";
   }
   if (status !== null && status >= 400) {
@@ -384,23 +352,24 @@ function extractUrlMetadata(rawUrl: string | undefined, options: UrlCaptureOptio
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return empty;
 
-  const path = redactPathname(parsed.pathname, parsed.hostname, options);
-  if (!captureQuery) return { host: parsed.hostname, path, query: {} };
+  const pathname = options.redactPath ? options.redactPath(parsed.pathname, parsed.hostname) : parsed.pathname;
+  const path = pathname === null ? null : boundedString(pathname.split("/").map((segment) => {
+    try {
+      // Inspect decoded data before truncation, including Referer paths that Cloudflare does not redact.
+      const decoded = decodeURIComponent(segment);
+      return redactTokens(decoded) === decoded ? segment : "REDACTED";
+    } catch {
+      return "REDACTED";
+    }
+  }).join("/"), MAX_PATH_LENGTH);
 
+  if (!captureQuery) return { host: parsed.hostname, path, query: {} };
   const allowed = options.allowedQueryParams === undefined ? null : new Set(options.allowedQueryParams);
   const query = new Map<string, string[]>();
   for (const [key, value] of parsed.searchParams) {
     if (allowed !== null && !allowed.has(key)) continue;
-    if (options.redactQueryValue !== undefined) {
-      const custom = options.redactQueryValue(key, value);
-      if (custom === null) continue;
-      const captured = custom !== value ? custom : redactDefaultQueryValue(key, custom, options, 0);
-      const values = query.get(key) ?? [];
-      values.push(captured);
-      query.set(key, values);
-      continue;
-    }
-    const captured = redactDefaultQueryValue(key, value, options, 0);
+    const captured = options.redactQueryValue ? options.redactQueryValue(key, value) : redactTokens(value);
+    if (captured === null) continue;
     const values = query.get(key) ?? [];
     values.push(captured);
     query.set(key, values);
@@ -408,149 +377,29 @@ function extractUrlMetadata(rawUrl: string | undefined, options: UrlCaptureOptio
   return { host: parsed.hostname, path, query: Object.fromEntries(query) };
 }
 
-function redactPathname(
-  rawPathname: string,
-  hostname: string,
-  options: UrlCaptureOptions,
-): string | null {
-  const pathname = options.redactPath ? options.redactPath(rawPathname, hostname) : rawPathname;
-  if (pathname === null) {
-    return null;
-  }
-  return boundedString(
-    pathname.split("/").map((segment) => {
-      try {
-        // Inspect decoded data before truncation, including Referer paths that Cloudflare does not redact.
-        const decoded = decodeURIComponent(segment);
-        return redactTokens(decoded) === decoded ? segment : "REDACTED";
-      } catch {
-        return "REDACTED";
-      }
-    }).join("/"),
-    MAX_PATH_LENGTH,
-  );
-}
-
-function redactDefaultQueryValue(
-  key: string,
-  value: string,
-  options: UrlCaptureOptions,
-  depth: number,
-): string {
-  if (DEFAULT_SENSITIVE_QUERY_KEYS.has(key.trim().toLowerCase())) {
-    return "REDACTED";
-  }
-  if (value.length === 0) {
-    return value;
-  }
-
-  let candidate = value;
-  if (/%[0-9a-fA-F]{2}/.test(candidate)) {
-    try {
-      const decodedOnce = decodeURIComponent(candidate);
-      if (decodedOnce !== candidate) {
-        candidate = decodedOnce;
-      }
-    } catch {
-      // Preserve literal percent signs and fall through to token redaction.
-    }
-  }
-
-  const trimmed = candidate.trim();
-  if (depth < 2 && /^https?:\/\//i.test(trimmed)) {
-    try {
-      const nested = new URL(trimmed);
-      if (nested.username.length > 0) nested.username = "REDACTED";
-      if (nested.password.length > 0) nested.password = "REDACTED";
-      const nestedPath = redactPathname(nested.pathname, nested.hostname, options);
-      nested.pathname = nestedPath ?? "/";
-      if (nested.search.length > 0) {
-        const sanitizedParams = new URLSearchParams();
-        for (const [nestedKey, nestedVal] of nested.searchParams) {
-          sanitizedParams.append(
-            nestedKey,
-            redactDefaultQueryValue(nestedKey, nestedVal, options, depth + 1),
-          );
-        }
-        const qs = sanitizedParams.toString();
-        nested.search = qs.length > 0 ? `?${qs}` : "";
-      }
-      if (nested.hash.length > 1) {
-        nested.hash = `#${redactTokens(nested.hash.slice(1))}`;
-      }
-      return nested.toString();
-    } catch {
-      return redactTokens(candidate);
-    }
-  }
-
-  if (depth < 2 && trimmed.startsWith("/")) {
-    try {
-      const isProtocolRelative = trimmed.startsWith("//");
-      const nested = isProtocolRelative
-        ? new URL(`https:${trimmed}`)
-        : new URL(trimmed, "https://placeholder.invalid");
-      const nestedPath =
-        redactPathname(nested.pathname, isProtocolRelative ? nested.hostname : "", options) ?? "/";
-      let querySuffix = "";
-      if (nested.search.length > 0) {
-        const sanitizedParams = new URLSearchParams();
-        for (const [nestedKey, nestedVal] of nested.searchParams) {
-          sanitizedParams.append(
-            nestedKey,
-            redactDefaultQueryValue(nestedKey, nestedVal, options, depth + 1),
-          );
-        }
-        const qs = sanitizedParams.toString();
-        if (qs.length > 0) {
-          querySuffix = `?${qs}`;
-        }
-      }
-      const hashSuffix =
-        nested.hash.length > 1 ? `#${redactTokens(nested.hash.slice(1))}` : nested.hash;
-      return isProtocolRelative
-        ? `//${nested.host}${nestedPath}${querySuffix}${hashSuffix}`
-        : `${nestedPath}${querySuffix}${hashSuffix}`;
-    } catch {
-      return redactTokens(candidate);
-    }
-  }
-
-  const redactedCandidate = redactTokens(candidate);
-  return redactedCandidate !== candidate ? redactedCandidate : redactTokens(value);
-}
-
 // Defense in depth only: short secrets and personal data require an application capture policy.
 function redactTokens(value: string): string {
   return value.replace(/[a-zA-Z0-9+_-]+/g, (token) => {
     // Prefixes such as tok_ can hide an otherwise recognizable hex identifier.
     return isSensitiveToken(token)
-      || isSensitiveToken(token.replace(/^[a-zA-Z]+[_-]/, "")) ? "REDACTED" : token;
+      || isSensitiveToken(token.replace(/^[a-zA-Z]+[_-]/, ""))
+      || token.split(/[_-]/).some(isSensitiveToken) ? "REDACTED" : token;
   });
 }
 
 function isSensitiveToken(token: string): boolean {
-  const withoutDate = token.replace(/^\d{4}-\d{2}-\d{2}-/, "");
-  const compact = withoutDate.replace(/[+_-]/g, "");
+  const compact = token.replace(/[+_-]/g, "");
   if (/^[a-fA-F0-9]{32,}$/.test(compact)) return true;
-  if (
-    withoutDate.length >= 21 &&
-    (withoutDate.match(/[A-Z]/g)?.length ?? 0) >= 2 &&
-    (withoutDate.match(/[a-z]/g)?.length ?? 0) >= 2 &&
-    (withoutDate.match(/[0-9]/g)?.length ?? 0) >= 2
-  ) {
-    return true;
+  if (token.length >= 21 && (token.match(/[A-Z]/g)?.length ?? 0) >= 2
+    && (token.match(/[a-z]/g)?.length ?? 0) >= 2 && (token.match(/[0-9]/g)?.length ?? 0) >= 2) return true;
+  if (!/^\d{13,19}$/.test(compact)) return false;
+  let sum = 0;
+  for (let i = compact.length - 1; i >= 0; i--) {
+    let digit = Number(compact[i]);
+    if ((compact.length - 1 - i) % 2 === 1) digit *= 2;
+    sum += digit > 9 ? digit - 9 : digit;
   }
-  if (/^\d{13,19}$/.test(compact)) {
-    let sum = 0;
-    for (let i = compact.length - 1; i >= 0; i--) {
-      let digit = Number(compact[i]);
-      if ((compact.length - 1 - i) % 2 === 1) digit *= 2;
-      sum += digit > 9 ? digit - 9 : digit;
-    }
-    if (sum % 10 === 0) return true;
-  }
-  return withoutDate.split(/[_-]/).some((part) => /^[a-fA-F0-9]{12,}$/.test(part));
+  return sum % 10 === 0;
 }
 
 function isPrefetchRequest(headers: Readonly<Record<string, string>> | undefined): boolean {
